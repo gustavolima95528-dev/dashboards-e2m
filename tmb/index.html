@@ -2188,8 +2188,6 @@ function renderResumo(){
     lines.push(`CPC:\t${fBRLR(m.cpc)}\t${em(m.cpc,METAS_T.cpc.val,false)} Meta: R$ ${METAS_T.cpc.val}`);
     lines.push(`CTR:\t${(m.ctr||0).toFixed(2)}%\t${em(m.ctr,METAS_T.ctr.val,true)} Meta: ${METAS_T.ctr.val}%`);
     lines.push(`CPM:\t${fBRLR(m.cpm)}\t${em(m.cpm,METAS_T.cpm.val,false)} Meta: R$ ${METAS_T.cpm.val}`);
-    lines.push(``);
-    lines.push(`Leads CRM (dedup):\t${m.totalLeads}`);
     return lines.join("\n");
   }
 
@@ -2258,8 +2256,6 @@ _${dateLabel}_\t\t
       ${row("CPC",fBRLR(m.cpc),`meta R$ ${METAS_T.cpc.val}`,em(m.cpc,METAS_T.cpc.val,false))}
       ${row("CTR",(m.ctr||0).toFixed(2)+"%",`meta ${METAS_T.ctr.val}%`,em(m.ctr,METAS_T.ctr.val,true))}
       ${row("CPM",fBRLR(m.cpm),`meta R$ ${METAS_T.cpm.val}`,em(m.cpm,METAS_T.cpm.val,false))}
-      <div style="height:10px"></div>
-      ${row("Leads CRM (dedup)",(m.totalLeads||0).toLocaleString("pt-BR"),"","")}
     </div>`;
   }
 
