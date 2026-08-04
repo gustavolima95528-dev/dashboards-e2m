@@ -2846,15 +2846,13 @@ function clearManualPlanDist(){S.manualPlanDist=null;renderResumoSeg();}
 //   investimento real  → S.meta[date].spend        (Base Meta)
 //   vendas realizadas   → S.leadsD[date].traffic    (Base leads)
 const PLAN_CPL   = 35;          // meta de custo por cadastro/lead
-const PLAN_TOTAL = 85000;       // investimento planejado do mês (travado)
-const PLAN_MONTH = "2026-07";   // mês do planejamento (yyyy-mm)
+const PLAN_TOTAL = 95000;       // investimento planejado do mês (travado)
+const PLAN_MONTH = "2026-08";   // mês do planejamento (yyyy-mm)
 // Curva de investimento planejado por dia (R$).
-// 01–20/07: valores exatos da planilha "Planejamento Total".
-// 21–31/07: completados para fechar exatamente R$ 85.000 no mês.
+// Agosto/2026: distribuição uniforme dos R$ 95.000 pelos 31 dias (sem curva específica informada).
+// Se houver a curva diária de agosto, preencher `exact` com {dia:valor} — o resto fecha o total automaticamente.
 const PLAN_INVEST = (()=>{
-  const exact={1:1658,2:1989,3:2188,4:2407,5:2647,
-    6:3177,7:3177,8:3177,9:3177,10:3177,11:3177,12:3177,13:3177,14:3177,15:3177,
-    16:3177,17:3177,18:3177,19:3177,20:3177};
+  const exact={};
   const daysInMonth=31;
   const known=Object.values(exact).reduce((a,b)=>a+b,0);
   const restDays=daysInMonth-Object.keys(exact).length;
@@ -2943,12 +2941,12 @@ function renderPlanejamento(){
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:13px;margin-bottom:13px">
       ${kpiCard("Investimento Planejado",fBRL(tot.planInvTot),"","var(--text-strong)")}
       ${kpiCard("Investimento Realizado",fBRL(tot.realInvTot),"",realColor(tot.realInvTot,tot.planInvHoje))}
-      ${kpiCard("Vendas Planejadas",fInt(tot.planVenTot),`meta CPL ${fBRL(PLAN_CPL)}`,"var(--text-strong)")}
-      ${kpiCard("Vendas Realizadas",fInt(tot.realVenTot),"",realColor(tot.realVenTot,tot.planVenHoje))}
+      ${kpiCard("Leads Planejados",fInt(tot.planVenTot),`meta CPL ${fBRL(PLAN_CPL)}`,"var(--text-strong)")}
+      ${kpiCard("Leads Realizados",fInt(tot.realVenTot),"",realColor(tot.realVenTot,tot.planVenHoje))}
     </div>
     <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:13px;margin-bottom:16px">
       ${kpiCard("Investimento Planejado até hoje",fBRL(tot.planInvHoje),"","var(--text-strong)")}
-      ${kpiCard("Vendas Planejadas até hoje",fInt(tot.planVenHoje),"","var(--text-strong)")}
+      ${kpiCard("Leads Planejados até hoje",fInt(tot.planVenHoje),"","var(--text-strong)")}
     </div>
     <div class="cc" style="padding:0;overflow:hidden">
       <div style="overflow-x:auto">
@@ -2957,8 +2955,8 @@ function renderPlanejamento(){
           <th style="${PLTHL}">DATA</th>
           <th style="${PLTHR}">INVESTIMENTO PLANEJADO</th>
           <th style="${PLTHR}">INVESTIMENTO REALIZADO</th>
-          <th style="${PLTHR}">VENDAS PLANEJADAS</th>
-          <th style="${PLTHR}">VENDAS REALIZADAS</th>
+          <th style="${PLTHR}">LEADS PLANEJADOS</th>
+          <th style="${PLTHR}">LEADS REALIZADOS</th>
         </tr></thead>
         <tbody>${bodyRows}</tbody>
       </table>
