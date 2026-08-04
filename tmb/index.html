@@ -360,6 +360,7 @@ const S = {
   leadsEsp:{},    // especialidade → count
   leadsByAdId:{}, // adId → date → count
   infoD:{},       // date → count de infoprodutores (leads que vendem info, in-scope)
+  ganhoD:{}, ganhoDOrg:{}, ganhoByAdId:{}, ganhoByCamp:{}, // ganhos (contrato assinado — HubSpot fase, coluna U)
   // ── Seguidores data ─────────────────────────────────────────────
   distMeta:{},    // date → {spend,clicks,impressions,profileVisits,video3s,video15s}
   distMetaByAd:{}, distMetaByAdByDate:{},
@@ -556,6 +557,8 @@ function normPhone(p){let d=String(p||"").replace(/\D/g,"");while(d.length>11&&d
 // Une as duas bases e conta cada pessoa 1x (match por e-mail OU telefone).
 // HubSpot manda nos dados; MetaBase completa quem não está no HubSpot.
 const _sim=v=>/^sim/i.test(String(v||"").trim());   // "Sim..." → verdadeiro
+// Ganho (contrato assinado): coluna U "Nome Fase do Pipeline" traz ora o rótulo "Ganho", ora o ID "1235306854".
+const _isGanho=v=>{const s=String(v||"").trim();return s==="1235306854"||/^ganho$/i.test(s);};
 // Unifica HubSpot + MetaBase + Fichas V2 num universo deduplicado (e-mail OU telefone).
 // Cada pessoa carrega 2 selos:
 //  • declared (infoprodutor) → "Vede Info?"(HS) / "Voce Vende Cursos..."(MB) / "Vende Info"(Fichas)
@@ -569,21 +572,22 @@ function dedupeLeads(hsRows,mbRows,fichasRows){
     adId:trailId(r["utm_content_last_hr"]),campId:trailId(r["utm_medium_last_hr"]),
     fat:(r["Qual foi seu faturamento no último ano?"]||r[" Qual foi seu faturamento no último ano?"]||"").trim(),
     area:(r["Qual área de atuação do seu projeto?"]||"").trim(),
-    declared:_sim(r["Vede Info?"]), verified:_sim(r["Vende Info Real"])});
+    declared:_sim(r["Vede Info?"]), verified:_sim(r["Vende Info Real"]),
+    won:_isGanho(r["Nome Fase do Pipeline"])});   // Ganho = contrato assinado (coluna U)
   const mapMB=r=>({src:"mb",
     email:normEmail(r["Email"]),phone:normPhone(r["Telefone"]),
     d:toISOLead(r["Data De Criacao Lp"]||r["Recebido Em"]||""),
     adId:trailId(r["Utm Content Last Hr"]),campId:trailId(r["Utm Medium Last Hr"]),
     fat:(r["Faixa De Faturamento Do Ultimo Ano"]||"").trim(),
     area:(r["Qual Area De Atuacao Do Seu Projeto"]||"").trim(),
-    declared:_sim(r["Voce Vende Cursos Online E Ou Mentorias E Ou Imersoes"]), verified:false});
+    declared:_sim(r["Voce Vende Cursos Online E Ou Mentorias E Ou Imersoes"]), verified:false, won:false});
   const mapFic=r=>({src:"fic",
     email:normEmail(r["Pessoa - E-mail"]),phone:normPhone(r["Pessoa - Telefone"]),
     d:toISOLead(r["Data correta"]||r["data"]||""),
     adId:trailId(r["Negócio - UTM Content"]),campId:trailId(r["Negócio - UTM Medium"]),
     fat:(r["Negócio - Faturamento no último ano?"]||"").trim(),
     area:(r["Negócio - Área de Atuação no Projeto"]||"").trim(),
-    declared:_sim(r["Vende Info"]), verified:_sim(r["Venda Info Real"])});
+    declared:_sim(r["Vende Info"]), verified:_sim(r["Venda Info Real"]), won:false});
   const recs=hsRows.map(mapHS).concat(mbRows.map(mapMB)).concat(fichasRows.map(mapFic));
   const parent=recs.map((_,i)=>i);
   const find=x=>{while(parent[x]!==x){parent[x]=parent[parent[x]];x=parent[x];}return x;};
@@ -595,7 +599,7 @@ function dedupeLeads(hsRows,mbRows,fichasRows){
   });
   const groups={};
   recs.forEach((r,i)=>{const g=find(i);(groups[g]=groups[g]||[]).push(r);});
-  const unified=[]; let nBoth=0,nHsOnly=0,nMbOnly=0,nInfo=0,nReal=0;
+  const unified=[]; let nBoth=0,nHsOnly=0,nMbOnly=0,nInfo=0,nReal=0,nGanho=0;
   for(const key in groups){
     const g=groups[key];
     const hs=g.filter(r=>r.src==="hs"), mb=g.filter(r=>r.src==="mb");
@@ -611,10 +615,11 @@ function dedupeLeads(hsRows,mbRows,fichasRows){
     const verified=g.some(r=>r.verified);           // verificado pelo comercial em qualquer base
     const isInfo=g.some(r=>r.declared)||verified;   // declarado OU verificado → infoprodutor
     const isReal=verified;                          // info real = verificado
-    if(isInfo)nInfo++; if(isReal)nReal++;
-    unified.push({d:rep.d,adId:rep.adId,campId:rep.campId,fat:rep.fat,area:rep.area,isInfo,isReal});
+    const isGanho=g.some(r=>r.won);                 // ganho = contrato assinado (fase HubSpot coluna U)
+    if(isInfo)nInfo++; if(isReal)nReal++; if(isGanho)nGanho++;
+    unified.push({d:rep.d,adId:rep.adId,campId:rep.campId,fat:rep.fat,area:rep.area,isInfo,isReal,isGanho});
   }
-  S.leadDedup={total:unified.length,ambas:nBoth,soHubspot:nHsOnly,soMetabase:nMbOnly,linhasHS:hsRows.length,linhasMB:mbRows.length,linhasFic:fichasRows.length,infoprodutores:nInfo,reais:nReal};
+  S.leadDedup={total:unified.length,ambas:nBoth,soHubspot:nHsOnly,soMetabase:nMbOnly,linhasHS:hsRows.length,linhasMB:mbRows.length,linhasFic:fichasRows.length,infoprodutores:nInfo,reais:nReal,ganhos:nGanho};
   return unified;
 }
 
@@ -622,6 +627,7 @@ function dedupeLeads(hsRows,mbRows,fichasRows){
 function buildLeadsFor(unified,scope,allPaid){
   const leadsD={},leadsByAdId={},leadsByCamp={},fat={},esp={},infoD={},infoDOrg={},infoRealD={},infoRealOrgD={};
   const infoByAdId={},infoByCamp={},realByAdId={},realByCamp={};   // infoprodutor/real por anúncio e campanha
+  const ganhoD={},ganhoDOrg={},ganhoByAdId={},ganhoByCamp={};      // ganhos (contrato assinado) por dia/anúncio/campanha
   const bump=(o,k,d)=>{if(!o[k])o[k]={};o[k][d]=(o[k][d]||0)+1;};
   for(const r of unified){
     const d=r.d; if(!d)continue;
@@ -633,9 +639,10 @@ function buildLeadsFor(unified,scope,allPaid){
       leadsD[d].traffic++;
       if(r.isInfo)infoD[d]=(infoD[d]||0)+1;       // infoprodutor = declarou (ou verificou) que vende info
       if(r.isReal)infoRealD[d]=(infoRealD[d]||0)+1; // info real = verificado pelo comercial
-      if(adId&&scope.adIds.has(adId)){bump(leadsByAdId,adId,d);if(r.isInfo)bump(infoByAdId,adId,d);if(r.isReal)bump(realByAdId,adId,d);}
+      if(r.isGanho)ganhoD[d]=(ganhoD[d]||0)+1;    // ganho = contrato assinado (fase HubSpot)
+      if(adId&&scope.adIds.has(adId)){bump(leadsByAdId,adId,d);if(r.isInfo)bump(infoByAdId,adId,d);if(r.isReal)bump(realByAdId,adId,d);if(r.isGanho)bump(ganhoByAdId,adId,d);}
       const cn=(campId&&scope.idToCamp[campId])?scope.idToCamp[campId]:null;
-      if(cn){bump(leadsByCamp,cn,d);if(r.isInfo)bump(infoByCamp,cn,d);if(r.isReal)bump(realByCamp,cn,d);}
+      if(cn){bump(leadsByCamp,cn,d);if(r.isInfo)bump(infoByCamp,cn,d);if(r.isReal)bump(realByCamp,cn,d);if(r.isGanho)bump(ganhoByCamp,cn,d);}
       if(r.fat)fat[r.fat]=(fat[r.fat]||0)+1;
       if(r.area)esp[r.area]=(esp[r.area]||0)+1;
     } else if(inAnyPaid){
@@ -645,9 +652,10 @@ function buildLeadsFor(unified,scope,allPaid){
       leadsD[d].organic++;
       if(r.isInfo)infoDOrg[d]=(infoDOrg[d]||0)+1;       // infoprodutor orgânico
       if(r.isReal)infoRealOrgD[d]=(infoRealOrgD[d]||0)+1; // info real orgânico
+      if(r.isGanho)ganhoDOrg[d]=(ganhoDOrg[d]||0)+1;    // ganho orgânico (sem atribuição a mídia paga)
     }
   }
-  return {leadsD,leadsByAdId,leadsByCamp,leadsFat:fat,leadsEsp:esp,infoD,infoDOrg,infoRealD,infoRealOrgD,infoByAdId,infoByCamp,realByAdId,realByCamp};
+  return {leadsD,leadsByAdId,leadsByCamp,leadsFat:fat,leadsEsp:esp,infoD,infoDOrg,infoRealD,infoRealOrgD,infoByAdId,infoByCamp,realByAdId,realByCamp,ganhoD,ganhoDOrg,ganhoByAdId,ganhoByCamp};
 }
 
 function mergeByDate(a,b){
@@ -691,6 +699,7 @@ function applyChannel(ch){
   S.leadsFat=c.leadsFat;S.leadsEsp=c.leadsEsp;S.infoD=c.infoD||{};
   S.infoDOrg=c.infoDOrg||{};S.infoRealD=c.infoRealD||{};S.infoRealOrgD=c.infoRealOrgD||{};
   S.infoByAdId=c.infoByAdId||{};S.infoByCamp=c.infoByCamp||{};S.realByAdId=c.realByAdId||{};S.realByCamp=c.realByCamp||{};
+  S.ganhoD=c.ganhoD||{};S.ganhoDOrg=c.ganhoDOrg||{};S.ganhoByAdId=c.ganhoByAdId||{};S.ganhoByCamp=c.ganhoByCamp||{};
 }
 function setChannel(ch){
   S.channel=ch;applyChannel(ch);
@@ -1002,6 +1011,7 @@ function getDailyT(start,end){
       landingViews:m.landingViews,metaLeads:m.metaLeads,
       infoprodutor:(S.infoD&&S.infoD[date])||0,
       infoReal:(S.infoRealD&&S.infoRealD[date])||0,
+      ganho:(S.ganhoD&&S.ganhoD[date])||0,
       trafficLeads:l.traffic};
   });
 }
@@ -1013,8 +1023,9 @@ function getTotalsT(daily){
     metaLeads:a.metaLeads+d.metaLeads,
     infoprodutor:a.infoprodutor+(d.infoprodutor||0),
     infoReal:a.infoReal+(d.infoReal||0),
+    ganho:a.ganho+(d.ganho||0),
     trafficLeads:a.trafficLeads+d.trafficLeads,
-  }),{spend:0,clicks:0,impressions:0,landingViews:0,metaLeads:0,infoprodutor:0,infoReal:0,trafficLeads:0});
+  }),{spend:0,clicks:0,impressions:0,landingViews:0,metaLeads:0,infoprodutor:0,infoReal:0,ganho:0,trafficLeads:0});
   return{...t,
     aplicacoes:t.trafficLeads,   // Aplicações = leads (dedup) atribuídos a mídia paga
     cpc:   t.clicks>0      ? t.spend/t.clicks              : 0,
@@ -1026,6 +1037,7 @@ function getTotalsT(daily){
     custoAplic:   t.trafficLeads>0 ? t.spend/t.trafficLeads       : 0,
     custoInfo:    t.infoprodutor>0 ? t.spend/t.infoprodutor       : 0,
     custoInfoReal:t.infoReal>0     ? t.spend/t.infoReal           : 0,
+    custoGanho:   t.ganho>0        ? t.spend/t.ganho              : 0,
     pctInfoAplic: t.trafficLeads>0 ? (t.infoprodutor/t.trafficLeads)*100 : 0,
     txConvForm:   t.landingViews>0 ? (t.trafficLeads/t.landingViews)*100 : 0,
   };
@@ -1597,6 +1609,7 @@ function renderPrincipal(){
   const cplC=statusColor(cpl,META_CPL,false);
   const sumRange=(o)=>{let t=0;for(const[d,n] of Object.entries(o||{})){if(d>=S.startDate&&d<=S.endDate)t+=n;}return t;};
   const infoOrg=sumRange(S.infoDOrg), infoRealOrg=sumRange(S.infoRealOrgD);
+  const ganhoOrg=sumRange(S.ganhoDOrg);
   el.innerHTML=`
     <div class="hdr" style="margin-bottom:6px">
       <div>
@@ -1616,6 +1629,10 @@ function renderPrincipal(){
       ${kpiCard("Custo por Infoprodutor",totT.custoInfo>0?fBRL(totT.custoInfo):"—",`meta ${fBRL(METAS_T.custoInfo.val)}`,totT.custoInfo>0?statusColor(totT.custoInfo,METAS_T.custoInfo.val,false):"var(--text-strong)",false,totT.custoInfo,METAS_T.custoInfo.val,false)}
       ${kpiCard("Infoprodutores Reais",(totT.infoReal||0).toLocaleString("pt-BR"),`orgânico: ${infoRealOrg} · vendem info`,"#34d399")}
       ${kpiCard("Custo por Info Real",totT.custoInfoReal>0?fBRL(totT.custoInfoReal):"—","verificado pelo comercial",totT.custoInfoReal>0?"#34d399":"var(--text-strong)")}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:13px;margin-bottom:16px">
+      ${kpiCard("Ganhos",(totT.ganho||0).toLocaleString("pt-BR"),`orgânico: ${ganhoOrg} · contrato assinado`,"#f59e0b")}
+      ${kpiCard("Custo por Ganho",totT.custoGanho>0?fBRL(totT.custoGanho):"—","investimento ÷ contratos assinados",totT.custoGanho>0?"#f59e0b":"var(--text-strong)")}
     </div>
     <div class="cc" style="margin-bottom:12px;position:relative">
       <div class="ch">
@@ -1857,10 +1874,12 @@ function renderAnuncios(){
     if(cSpend===0)continue;
     const cLeads=sumLeads(S.leadsByCamp,campName);
     const cInfos=sumLeads(S.infoByCamp,campName), cReais=sumLeads(S.realByCamp,campName);
-    campRows.push({campName,spend:cSpend,clicks:cClicks,impressions:cImpr,leads:cLeads,infos:cInfos,reais:cReais,
+    const cGanhos=sumLeads(S.ganhoByCamp,campName);
+    campRows.push({campName,spend:cSpend,clicks:cClicks,impressions:cImpr,leads:cLeads,infos:cInfos,reais:cReais,ganhos:cGanhos,
       cpc:cClicks>0?cSpend/cClicks:0, ctr:cImpr>0?(cClicks/cImpr)*100:0,
       cpm:cImpr>0?(cSpend/cImpr)*1000:0, cpl:cLeads>0?cSpend/cLeads:0,
-      custoInfo:cInfos>0?cSpend/cInfos:0, custoInfoReal:cReais>0?cSpend/cReais:0});
+      custoInfo:cInfos>0?cSpend/cInfos:0, custoInfoReal:cReais>0?cSpend/cReais:0,
+      custoGanho:cGanhos>0?cSpend/cGanhos:0});
   }
   const {col:cCol,dir:cDir}=S.cSort;
   const sortedCamps=[...campRows].sort((a,b)=>{
@@ -1887,23 +1906,26 @@ function renderAnuncios(){
     if(spend===0)continue;
     if(!igUrl)igUrl=meta.igUrl||"";
     // Sum leads/infos/reais across all Ad IDs associated with this ad name
-    let leads=0,infos=0,reais=0;
+    let leads=0,infos=0,reais=0,ganhos=0;
     for(const adId of(meta.adIds||[])){
       for(const[d,n] of Object.entries(S.leadsByAdId[adId]||{})){if(d>=start&&d<=end)leads+=n;}
       for(const[d,n] of Object.entries(S.infoByAdId[adId]||{})){if(d>=start&&d<=end)infos+=n;}
       for(const[d,n] of Object.entries(S.realByAdId[adId]||{})){if(d>=start&&d<=end)reais+=n;}
+      for(const[d,n] of Object.entries(S.ganhoByAdId[adId]||{})){if(d>=start&&d<=end)ganhos+=n;}
     }
-    adRows.push({adName,spend,clicks,impressions,leads,infos,reais,igUrl,
+    adRows.push({adName,spend,clicks,impressions,leads,infos,reais,ganhos,igUrl,
       cpc:clicks>0?spend/clicks:0, ctr:impressions>0?(clicks/impressions)*100:0,
       cpm:impressions>0?(spend/impressions)*1000:0, cpl:leads>0?spend/leads:0,
-      custoInfo:infos>0?spend/infos:0, custoInfoReal:reais>0?spend/reais:0});
+      custoInfo:infos>0?spend/infos:0, custoInfoReal:reais>0?spend/reais:0,
+      custoGanho:ganhos>0?spend/ganhos:0});
   }
 
-  const tot=campRows.reduce((a,c)=>({spend:a.spend+c.spend,clicks:a.clicks+c.clicks,impressions:a.impressions+c.impressions,leads:a.leads+c.leads,infos:a.infos+c.infos,reais:a.reais+c.reais}),{spend:0,clicks:0,impressions:0,leads:0,infos:0,reais:0});
+  const tot=campRows.reduce((a,c)=>({spend:a.spend+c.spend,clicks:a.clicks+c.clicks,impressions:a.impressions+c.impressions,leads:a.leads+c.leads,infos:a.infos+c.infos,reais:a.reais+c.reais,ganhos:a.ganhos+c.ganhos}),{spend:0,clicks:0,impressions:0,leads:0,infos:0,reais:0,ganhos:0});
   const totCpl=tot.leads>0?tot.spend/tot.leads:0;
   const totCtr=tot.impressions>0?(tot.clicks/tot.impressions)*100:0;
   const totCustoInfo=tot.infos>0?tot.spend/tot.infos:0;
   const totCustoInfoReal=tot.reais>0?tot.spend/tot.reais:0;
+  const totCustoGanho=tot.ganhos>0?tot.spend/tot.ganhos:0;
 
   // Search filter on ads
   const _aq=S.adSearch.trim().toLowerCase();
@@ -1935,6 +1957,9 @@ function renderAnuncios(){
       lines.push(`Infoprodutores Reais:\t${a.reais}`);
       lines.push(`Custo por Info Real:\t${a.reais>0?fBRL(a.custoInfoReal):"—"}`);
       lines.push(``);
+      lines.push(`Ganhos:\t${a.ganhos}`);
+      lines.push(`Custo por Ganho:\t${a.ganhos>0?fBRL(a.custoGanho):"—"}`);
+      lines.push(``);
       lines.push(`CPC:\t${fBRL(a.cpc)}`);
       lines.push(`CPM:\t${fBRL(a.cpm)}`);
       lines.push(`CTR:\t${fPct(a.ctr)}`);
@@ -1949,6 +1974,7 @@ function renderAnuncios(){
   const _avgK=(arr,k)=>{const v=arr.map(r=>r[k]||0).filter(x=>x>0);return v.length?v.reduce((a,b)=>a+b,0)/v.length:0;};
   const totRow=(arr)=>({n:arr.length,
     spend:_sumK(arr,"spend"),leads:_sumK(arr,"leads"),infos:_sumK(arr,"infos"),reais:_sumK(arr,"reais"),
+    ganhos:_sumK(arr,"ganhos"),custoGanho:_avgK(arr,"custoGanho"),
     cpl:_avgK(arr,"cpl"),custoInfo:_avgK(arr,"custoInfo"),custoInfoReal:_avgK(arr,"custoInfoReal"),
     ctr:_avgK(arr,"ctr"),cpm:_avgK(arr,"cpm"),cpc:_avgK(arr,"cpc")});
   const cTot=totRow(filteredCamps), aTot=totRow(sorted);
@@ -1964,6 +1990,8 @@ function renderAnuncios(){
       <td style="${_TDR};color:var(--muted)">${T.custoInfo>0?fBRL(T.custoInfo):"—"}</td>
       <td style="${_TDR};color:#34d399">${T.reais}</td>
       <td style="${_TDR};color:#34d399">${T.custoInfoReal>0?fBRL(T.custoInfoReal):"—"}</td>
+      <td style="${_TDR};color:#f59e0b">${T.ganhos}</td>
+      <td style="${_TDR};color:#f59e0b">${T.custoGanho>0?fBRL(T.custoGanho):"—"}</td>
       <td style="${_TDR};color:var(--muted)">${fPct(T.ctr)}</td>
       <td style="${_TDR};color:var(--muted)">${fBRL(T.cpm)}</td>
       <td style="${_TDR};color:var(--muted)">${fBRL(T.cpc)}</td>
@@ -2012,6 +2040,10 @@ function renderAnuncios(){
       ${kpiCard("Infoprodutores Reais",tot.reais.toLocaleString("pt-BR"),"verificado","#34d399")}
       ${kpiCard("Custo por Info Real",totCustoInfoReal>0?fBRL(totCustoInfoReal):"—","verificado",totCustoInfoReal>0?"#34d399":"var(--text-strong)")}
     </div>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:13px;margin-bottom:20px">
+      ${kpiCard("Ganhos",tot.ganhos.toLocaleString("pt-BR"),"contrato assinado","#f59e0b")}
+      ${kpiCard("Custo por Ganho",totCustoGanho>0?fBRL(totCustoGanho):"—","investimento ÷ ganhos",totCustoGanho>0?"#f59e0b":"var(--text-strong)")}
+    </div>
 
     <!-- Campanhas -->
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
@@ -2035,6 +2067,8 @@ function renderAnuncios(){
           ${thC("custoInfo","Custo/Info",true)}
           ${thC("reais","Infos Reais",true)}
           ${thC("custoInfoReal","Custo/Info Real",true)}
+          ${thC("ganhos","Ganhos",true)}
+          ${thC("custoGanho","Custo/Ganho",true)}
           ${thC("ctr","CTR",true)}
           ${thC("cpm","CPM",true)}
           ${thC("cpc","CPC",true)}
@@ -2052,6 +2086,8 @@ function renderAnuncios(){
               <td style="padding:9px 14px;text-align:right;color:${c.custoInfo>0?sc(c.custoInfo,METAS_T.custoInfo.val,false):"var(--muted)"}">${c.custoInfo>0?fBRL(c.custoInfo):"—"}</td>
               <td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:#34d399">${c.reais}</td>
               <td style="padding:9px 14px;text-align:right;color:${c.custoInfoReal>0?"#34d399":"var(--muted)"}">${c.custoInfoReal>0?fBRL(c.custoInfoReal):"—"}</td>
+              <td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:#f59e0b;font-weight:600">${c.ganhos}</td>
+              <td style="padding:9px 14px;text-align:right;color:${c.custoGanho>0?"#f59e0b":"var(--muted)"}">${c.custoGanho>0?fBRL(c.custoGanho):"—"}</td>
               <td style="padding:9px 14px;text-align:right;color:${sc(c.ctr,METAS_T.ctr.val,true)}">${fPct(c.ctr)}</td>
               <td style="padding:9px 14px;text-align:right;color:${sc(c.cpm,METAS_T.cpm.val,false)}">${fBRL(c.cpm)}</td>
               <td style="padding:9px 14px;text-align:right;color:${sc(c.cpc,METAS_T.cpc.val,false)}">${fBRL(c.cpc)}</td>
@@ -2084,6 +2120,8 @@ function renderAnuncios(){
           ${thC("custoInfo","Custo/Info",false)}
           ${thC("reais","Infos Reais",false)}
           ${thC("custoInfoReal","Custo/Info Real",false)}
+          ${thC("ganhos","Ganhos",false)}
+          ${thC("custoGanho","Custo/Ganho",false)}
           ${thC("ctr","CTR",false)}
           ${thC("cpm","CPM",false)}
           ${thC("cpc","CPC",false)}
@@ -2102,6 +2140,8 @@ function renderAnuncios(){
               <td style="padding:9px 14px;text-align:right;color:${a.custoInfo>0?sc(a.custoInfo,METAS_T.custoInfo.val,false):"var(--muted)"}">${a.custoInfo>0?fBRL(a.custoInfo):"—"}</td>
               <td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:#34d399">${a.reais}</td>
               <td style="padding:9px 14px;text-align:right;color:${a.custoInfoReal>0?"#34d399":"var(--muted)"}">${a.custoInfoReal>0?fBRL(a.custoInfoReal):"—"}</td>
+              <td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:#f59e0b;font-weight:600">${a.ganhos}</td>
+              <td style="padding:9px 14px;text-align:right;color:${a.custoGanho>0?"#f59e0b":"var(--muted)"}">${a.custoGanho>0?fBRL(a.custoGanho):"—"}</td>
               <td style="padding:9px 14px;text-align:right;color:${sc(a.ctr,METAS_T.ctr.val,true)}">${fPct(a.ctr)}</td>
               <td style="padding:9px 14px;text-align:right;color:${sc(a.cpm,METAS_T.cpm.val,false)}">${fBRL(a.cpm)}</td>
               <td style="padding:9px 14px;text-align:right;color:${sc(a.cpc,METAS_T.cpc.val,false)}">${fBRL(a.cpc)}</td>
