@@ -125,7 +125,8 @@ html,body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-seri
 .st{color:var(--hint);font-size:13px}
 .foot{margin-top:18px;font-size:10px;color:var(--hint);text-align:center;font-family:'JetBrains Mono',monospace;opacity:.5}
 canvas{display:block}
-input[type=date]::-webkit-calendar-picker-indicator{opacity:.4;cursor:pointer;filter:invert(1)}
+input[type=date]::-webkit-calendar-picker-indicator{opacity:.85;cursor:pointer;filter:invert(1)}
+input[type=date]::-webkit-calendar-picker-indicator:hover{opacity:1}
 
 /* Quick period inside pages (funil / análise) */
 .period-wrap{margin-bottom:18px}
@@ -284,10 +285,11 @@ input[type=date]::-webkit-calendar-picker-indicator{opacity:.4;cursor:pointer;fi
       <button class="btn-pre" onclick="applyQuickCurrent('mes')">Este mês</button>
     </div>
     <div class="drbox">
-      <span class="drbox-icon">📅</span>
-      <input type="date" id="hdr-start" onchange="onDCCurrent('s',this.value)"/>
+      <span class="drbox-icon" title="Abrir calendário (início)" onclick="openPicker('hdr-start')" style="cursor:pointer">📅</span>
+      <input type="date" id="hdr-start" title="Digite ou clique para escolher no calendário" onchange="onDCCurrent('s',this.value)" onclick="this.showPicker&&this.showPicker()"/>
       <span class="drbox-sep">→</span>
-      <input type="date" id="hdr-end" onchange="onDCCurrent('e',this.value)"/>
+      <input type="date" id="hdr-end" title="Digite ou clique para escolher no calendário" onchange="onDCCurrent('e',this.value)" onclick="this.showPicker&&this.showPicker()"/>
+      <span class="drbox-icon" title="Abrir calendário (fim)" onclick="openPicker('hdr-end')" style="cursor:pointer">📅</span>
     </div>
     <button class="btn-update" id="btn-update" onclick="loadData(true)">↻ Atualizar</button>
     <span id="src-badge" title="Fonte de dados"></span>
@@ -684,10 +686,24 @@ function buildPerpetuo(metaRows,googRows,hsRows,mbRows,fichasRows){
     byCamp:Object.assign({},mAgg.byCamp,gAggP.byCamp),
     byCampByDate:Object.assign({},mAgg.byCampByDate,gAggP.byCampByDate),
   };
+  // Leads BRUTOS (não-deduplicados) da base HubSpot, por dia, atribuídos a mídia paga.
+  // Serve para mostrar no painel a diferença "bruto → desduplicado" respeitando o canal:
+  // o HubSpot conta cada cadastro (inclusive recorrentes); o dash conta cada pessoa 1x na 1ª data.
+  const rawHSTrafByDate=(scope)=>{
+    const o={};
+    for(const r of hsRows){
+      const d=toISOLead(r["Data Criação Lead"]||r["Data/hora de criação do objeto"]||"");
+      if(!d)continue;
+      const adId=trailId(r["utm_content_last_hr"]), campId=trailId(r["utm_medium_last_hr"]);
+      const inScope=(adId&&scope.adIds.has(adId))||(campId&&scope.campIds.has(campId));
+      if(inScope)o[d]=(o[d]||0)+1;
+    }
+    return o;
+  };
   return {
-    consolidado:Object.assign({},cons,cLeads),
-    meta:{byDate:mAgg.byDate,byAd:mAgg.byAd,byAdByDate:mAgg.byAdByDate,byCamp:mAgg.byCamp,byCampByDate:mAgg.byCampByDate,...mLeads},
-    google:{byDate:gAgg.byDate,byAd:gAgg.byAd,byAdByDate:gAgg.byAdByDate,byCamp:gAgg.byCamp,byCampByDate:gAgg.byCampByDate,...gLeads},
+    consolidado:Object.assign({},cons,cLeads,{rawTrafD:rawHSTrafByDate(allPaid)}),
+    meta:{byDate:mAgg.byDate,byAd:mAgg.byAd,byAdByDate:mAgg.byAdByDate,byCamp:mAgg.byCamp,byCampByDate:mAgg.byCampByDate,...mLeads,rawTrafD:rawHSTrafByDate({adIds:mAgg.adIds,campIds:mAgg.campIds})},
+    google:{byDate:gAgg.byDate,byAd:gAgg.byAd,byAdByDate:gAgg.byAdByDate,byCamp:gAgg.byCamp,byCampByDate:gAgg.byCampByDate,...gLeads,rawTrafD:rawHSTrafByDate({adIds:gAgg.adIds,campIds:gAgg.campIds})},
   };
 }
 
@@ -700,6 +716,7 @@ function applyChannel(ch){
   S.infoDOrg=c.infoDOrg||{};S.infoRealD=c.infoRealD||{};S.infoRealOrgD=c.infoRealOrgD||{};
   S.infoByAdId=c.infoByAdId||{};S.infoByCamp=c.infoByCamp||{};S.realByAdId=c.realByAdId||{};S.realByCamp=c.realByCamp||{};
   S.ganhoD=c.ganhoD||{};S.ganhoDOrg=c.ganhoDOrg||{};S.ganhoByAdId=c.ganhoByAdId||{};S.ganhoByCamp=c.ganhoByCamp||{};
+  S.rawTrafD=c.rawTrafD||{};   // leads brutos (não-dedup) de tráfego, por dia, do canal ativo
 }
 function setChannel(ch){
   S.channel=ch;applyChannel(ch);
@@ -1157,6 +1174,11 @@ function applyQuickCurrent(k){
 }
 function onDCCurrent(w,v){
   if(w==="s")S.startDate=v;else S.endDate=v;S.activeQuick="";render();
+}
+// Abre o calendário nativo do input de data (ícone 📅 clicável). Fallback: foca o input.
+function openPicker(id){
+  const el=document.getElementById(id);if(!el)return;
+  try{ el.showPicker ? el.showPicker() : el.focus(); }catch(e){ el.focus(); }
 }
 function sortCampanhas(col){
   if(S.cSort.col===col)S.cSort.dir=S.cSort.dir==="asc"?"desc":"asc";
@@ -1640,7 +1662,7 @@ function renderPrincipal(){
     ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:13px;margin-bottom:13px">
       ${kpiCard("Investimento",fBRL(tot.spend),"","var(--text-strong)")}
-      ${kpiCard("Leads (tráfego)",tot.trafficLeads.toLocaleString("pt-BR"),`orgânico: ${tot.organicLeads}`,"var(--text-strong)")}
+      ${kpiCard("Leads (tráfego)",tot.trafficLeads.toLocaleString("pt-BR"),`orgânico: ${tot.organicLeads} · dedup: ${sumRange(S.rawTrafD).toLocaleString("pt-BR")}→${tot.trafficLeads.toLocaleString("pt-BR")}`,"var(--text-strong)")}
       ${kpiCard("Custo por Lead",fBRL(cpl),`meta ${fBRL(META_CPL)}`,cplC,false,cpl,META_CPL,false)}
     </div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:13px;margin-bottom:16px">
