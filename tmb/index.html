@@ -995,19 +995,34 @@ function getTotals(daily){
   }),{spend:0,trafficLeads:0,organicLeads:0});
 }
 
+// Connect Rate e Tx conv formulário dependem de landing page views, que SÓ existem no Meta
+// (Google não tem "Landing Page View"). No canal Consolidado, clicks e trafficLeads somam
+// Meta+Google, o que distorce essas duas taxas (connect fica baixo demais, tx conv alto demais).
+// Estes helpers isolam os números do Meta para bater com o gerenciador. Fora do Consolidado,
+// devolvem os valores do canal ativo (no Meta é idêntico; no Google cai em 0, como antes).
+function metaClicksOn(date){
+  if(S.channel==="consolidado"){const m=S._chan&&S._chan.meta&&S._chan.meta.byDate[date];return m?m.clicks:0;}
+  return (S.meta[date]&&S.meta[date].clicks)||0;
+}
+function metaTrafOn(date){
+  if(S.channel==="consolidado"){const l=S._chan&&S._chan.meta&&S._chan.meta.leadsD[date];return l?l.traffic:0;}
+  return (S.leadsD[date]&&S.leadsD[date].traffic)||0;
+}
 function getDailyT(start,end){
   return Object.keys(S.meta).sort().filter(d=>d>=start&&d<=end).map(date=>{
     const m=S.meta[date];
     const l=S.leadsD[date]||{traffic:0,organic:0};
+    const mClk=metaClicksOn(date);   // cliques só do Meta (denominador do Connect Rate)
+    const mTrf=metaTrafOn(date);     // leads só do Meta (numerador do Tx conv formulário)
     const cpc   = m.clicks>0      ? m.spend/m.clicks           : 0;
     const ctr   = m.impressions>0 ? (m.clicks/m.impressions)*100 : 0;
     const cpm   = m.impressions>0 ? (m.spend/m.impressions)*1000 : 0;
-    const connect   = m.clicks>0  ? (m.landingViews/m.clicks)*100 : 0;
-    const txConvPg  = m.landingViews>0 ? (l.traffic/m.landingViews)*100 : 0;
+    const connect   = mClk>0  ? (m.landingViews/mClk)*100 : 0;
+    const txConvPg  = m.landingViews>0 ? (mTrf/m.landingViews)*100 : 0;
     const cpl   = l.traffic>0     ? m.spend/l.traffic           : 0;
     return{date,label:fDate(date),spend:m.spend,
       cpc,ctr,cpm,connect,txConvPg,cpl,
-      clicks:m.clicks,impressions:m.impressions,
+      clicks:m.clicks,impressions:m.impressions,mClicks:mClk,mTraf:mTrf,
       landingViews:m.landingViews,metaLeads:m.metaLeads,
       infoprodutor:(S.infoD&&S.infoD[date])||0,
       infoReal:(S.infoRealD&&S.infoRealD[date])||0,
@@ -1021,25 +1036,27 @@ function getTotalsT(daily){
     impressions:a.impressions+d.impressions,
     landingViews:a.landingViews+d.landingViews,
     metaLeads:a.metaLeads+d.metaLeads,
+    mClicks:a.mClicks+(d.mClicks||0),   // cliques só do Meta (Connect Rate)
+    mTraf:a.mTraf+(d.mTraf||0),         // leads só do Meta (Tx conv formulário)
     infoprodutor:a.infoprodutor+(d.infoprodutor||0),
     infoReal:a.infoReal+(d.infoReal||0),
     ganho:a.ganho+(d.ganho||0),
     trafficLeads:a.trafficLeads+d.trafficLeads,
-  }),{spend:0,clicks:0,impressions:0,landingViews:0,metaLeads:0,infoprodutor:0,infoReal:0,ganho:0,trafficLeads:0});
+  }),{spend:0,clicks:0,impressions:0,landingViews:0,metaLeads:0,mClicks:0,mTraf:0,infoprodutor:0,infoReal:0,ganho:0,trafficLeads:0});
   return{...t,
     aplicacoes:t.trafficLeads,   // Aplicações = leads (dedup) atribuídos a mídia paga
     cpc:   t.clicks>0      ? t.spend/t.clicks              : 0,
     ctr:   t.impressions>0 ? (t.clicks/t.impressions)*100  : 0,
     cpm:   t.impressions>0 ? (t.spend/t.impressions)*1000  : 0,
-    connect:  t.clicks>0       ? (t.landingViews/t.clicks)*100    : 0,
-    txConvPg: t.landingViews>0 ? (t.trafficLeads/t.landingViews)*100 : 0,
+    connect:  t.mClicks>0      ? (t.landingViews/t.mClicks)*100   : 0,  // só Meta: landingViews ÷ cliques Meta
+    txConvPg: t.landingViews>0 ? (t.mTraf/t.landingViews)*100 : 0,      // só Meta: leads Meta ÷ landingViews
     cpl:   t.trafficLeads>0 ? t.spend/t.trafficLeads : 0,
     custoAplic:   t.trafficLeads>0 ? t.spend/t.trafficLeads       : 0,
     custoInfo:    t.infoprodutor>0 ? t.spend/t.infoprodutor       : 0,
     custoInfoReal:t.infoReal>0     ? t.spend/t.infoReal           : 0,
     custoGanho:   t.ganho>0        ? t.spend/t.ganho              : 0,
     pctInfoAplic: t.trafficLeads>0 ? (t.infoprodutor/t.trafficLeads)*100 : 0,
-    txConvForm:   t.landingViews>0 ? (t.trafficLeads/t.landingViews)*100 : 0,
+    txConvForm:   t.landingViews>0 ? (t.mTraf/t.landingViews)*100 : 0,  // só Meta: leads Meta ÷ landingViews
   };
 }
 // Investimento por canal num período (para % de distribuição de verba)
@@ -1052,13 +1069,15 @@ function channelSpend(start,end){
 function getDayMetrics(iso){
   const m=S.meta[iso]||{spend:0,clicks:0,impressions:0,metaLeads:0,landingViews:0};
   const l=S.leadsD[iso]||{traffic:0,organic:0};
+  const mClk=metaClicksOn(iso);   // cliques só do Meta (Connect Rate)
+  const mTrf=metaTrafOn(iso);     // leads só do Meta (Tx conv formulário)
   return{
     spend:m.spend,
     cpc:   m.clicks>0      ? m.spend/m.clicks              : 0,
     ctr:   m.impressions>0 ? (m.clicks/m.impressions)*100  : 0,
     cpm:   m.impressions>0 ? (m.spend/m.impressions)*1000  : 0,
-    connect:  m.clicks>0       ? (m.landingViews/m.clicks)*100    : 0,
-    txConvPg: m.landingViews>0 ? (l.traffic/m.landingViews)*100 : 0,
+    connect:  mClk>0       ? (m.landingViews/mClk)*100    : 0,
+    txConvPg: m.landingViews>0 ? (mTrf/m.landingViews)*100 : 0,
     cpl:   l.traffic>0     ? m.spend/l.traffic             : 0,
     trafficLeads:l.traffic,
   };
