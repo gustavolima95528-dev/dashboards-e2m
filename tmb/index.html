@@ -507,6 +507,7 @@ function processAdSource(rows,cfg,prefix){
   prefix=prefix||"";
   const byDate={},byAd={},byAdByDate={},byCamp={},byCampByDate={};
   const idToCamp={},adIds=new Set(),campIds=new Set();
+  const byAdCampByDate={},adIdToCamp={};   // gasto por anúncio×campanha×dia + mapa adId→campanha (p/ filtro de campanha)
   for(const r of rows){
     const d=toISO(r[cfg.date]);if(!d)continue;
     const sp=parseBRL(r[cfg.spend]);
@@ -524,6 +525,7 @@ function processAdSource(rows,cfg,prefix){
     if(prefix){if(campName!=="—")campName=prefix+campName;if(adName)adName=prefix+adName;}
     if(adId)adIds.add(adId);
     if(campId){campIds.add(campId);if(campName!=="—")idToCamp[campId]=campName;}
+    if(adId&&campName&&campName!=="—")adIdToCamp[adId]=campName;   // cada Ad ID pertence a 1 campanha
 
     if(!byDate[d])byDate[d]={spend:0,clicks:0,impressions:0,metaLeads:0,landingViews:0};
     byDate[d].spend+=sp;byDate[d].clicks+=cl;byDate[d].impressions+=im;byDate[d].metaLeads+=ml;byDate[d].landingViews+=lv;
@@ -539,6 +541,15 @@ function processAdSource(rows,cfg,prefix){
       byAdByDate[adName][d].spend+=sp;byAdByDate[adName][d].clicks+=cl;byAdByDate[adName][d].impressions+=im;byAdByDate[adName][d].metaLeads+=ml;
       if(adId)byAdByDate[adName][d].adIds.add(adId);
       if(igUrl&&!byAdByDate[adName][d].igUrl)byAdByDate[adName][d].igUrl=igUrl;
+      // gasto do anúncio SEPARADO por campanha (p/ o filtro de campanha restringir os números)
+      if(campName&&campName!=="—"){
+        if(!byAdCampByDate[adName])byAdCampByDate[adName]={};
+        if(!byAdCampByDate[adName][campName])byAdCampByDate[adName][campName]={};
+        const _t=byAdCampByDate[adName][campName];
+        if(!_t[d])_t[d]={spend:0,clicks:0,impressions:0,igUrl:""};
+        _t[d].spend+=sp;_t[d].clicks+=cl;_t[d].impressions+=im;
+        if(igUrl&&!_t[d].igUrl)_t[d].igUrl=igUrl;
+      }
     }
     if(campName&&campName!=="—"){
       if(!byCamp[campName])byCamp[campName]={campName,campId,spend:0,clicks:0,impressions:0,metaLeads:0,landingViews:0};
@@ -549,7 +560,7 @@ function processAdSource(rows,cfg,prefix){
       if(adId)byCampByDate[campName][d].adIds.add(adId);
     }
   }
-  return {byDate,byAd,byAdByDate,byCamp,byCampByDate,idToCamp,adIds,campIds};
+  return {byDate,byAd,byAdByDate,byCamp,byCampByDate,byAdCampByDate,adIdToCamp,idToCamp,adIds,campIds};
 }
 
 // ── Deduplicação de leads (HubSpot + MetaBase) ────────────────────────────
@@ -685,6 +696,8 @@ function buildPerpetuo(metaRows,googRows,hsRows,mbRows,fichasRows){
     byAdByDate:Object.assign({},mAgg.byAdByDate,gAggP.byAdByDate),
     byCamp:Object.assign({},mAgg.byCamp,gAggP.byCamp),
     byCampByDate:Object.assign({},mAgg.byCampByDate,gAggP.byCampByDate),
+    byAdCampByDate:Object.assign({},mAgg.byAdCampByDate,gAggP.byAdCampByDate),
+    adIdToCamp:Object.assign({},mAgg.adIdToCamp,gAggP.adIdToCamp),
   };
   // Leads BRUTOS (não-deduplicados) da base HubSpot, por dia, atribuídos a mídia paga.
   // Serve para mostrar no painel a diferença "bruto → desduplicado" respeitando o canal:
@@ -702,8 +715,8 @@ function buildPerpetuo(metaRows,googRows,hsRows,mbRows,fichasRows){
   };
   return {
     consolidado:Object.assign({},cons,cLeads,{rawTrafD:rawHSTrafByDate(allPaid)}),
-    meta:{byDate:mAgg.byDate,byAd:mAgg.byAd,byAdByDate:mAgg.byAdByDate,byCamp:mAgg.byCamp,byCampByDate:mAgg.byCampByDate,...mLeads,rawTrafD:rawHSTrafByDate({adIds:mAgg.adIds,campIds:mAgg.campIds})},
-    google:{byDate:gAgg.byDate,byAd:gAgg.byAd,byAdByDate:gAgg.byAdByDate,byCamp:gAgg.byCamp,byCampByDate:gAgg.byCampByDate,...gLeads,rawTrafD:rawHSTrafByDate({adIds:gAgg.adIds,campIds:gAgg.campIds})},
+    meta:{byDate:mAgg.byDate,byAd:mAgg.byAd,byAdByDate:mAgg.byAdByDate,byCamp:mAgg.byCamp,byCampByDate:mAgg.byCampByDate,byAdCampByDate:mAgg.byAdCampByDate,adIdToCamp:mAgg.adIdToCamp,...mLeads,rawTrafD:rawHSTrafByDate({adIds:mAgg.adIds,campIds:mAgg.campIds})},
+    google:{byDate:gAgg.byDate,byAd:gAgg.byAd,byAdByDate:gAgg.byAdByDate,byCamp:gAgg.byCamp,byCampByDate:gAgg.byCampByDate,byAdCampByDate:gAgg.byAdCampByDate,adIdToCamp:gAgg.adIdToCamp,...gLeads,rawTrafD:rawHSTrafByDate({adIds:gAgg.adIds,campIds:gAgg.campIds})},
   };
 }
 
@@ -711,6 +724,7 @@ function applyChannel(ch){
   const c=S._chan&&S._chan[ch];if(!c)return;
   S.meta=c.byDate;S.metaByAd=c.byAd;S.metaByAdByDate=c.byAdByDate;
   S.metaByCamp=c.byCamp;S.metaByCampByDate=c.byCampByDate;
+  S.metaByAdCampByDate=c.byAdCampByDate||{};S.adIdToCamp=c.adIdToCamp||{};
   S.leadsD=c.leadsD;S.leadsByAdId=c.leadsByAdId;S.leadsByCamp=c.leadsByCamp;
   S.leadsFat=c.leadsFat;S.leadsEsp=c.leadsEsp;S.infoD=c.infoD||{};
   S.infoDOrg=c.infoDOrg||{};S.infoRealD=c.infoRealD||{};S.infoRealOrgD=c.infoRealOrgD||{};
@@ -1937,18 +1951,29 @@ function renderAnuncios(){
   const hasCampSel=S.selectedCamps.size>0;
   const adRows=[];
   for(const[adName,meta] of Object.entries(S.metaByAd)){
-    if(hasCampSel){
-      const adCamps=meta.camps||new Set();
-      if(![...S.selectedCamps].some(c=>adCamps.has(c)))continue;
-    }
-    const byDate=S.metaByAdByDate[adName]||{};
+    // Gasto do anúncio no período. Com campanha selecionada, considera SÓ o gasto naquela(s)
+    // campanha(s) — antes somava o anúncio em todas as campanhas, o que "vazava" anúncios que
+    // rodaram na campanha em outro período mas gastaram em outra campanha no período atual.
     let spend=0,clicks=0,impressions=0,igUrl="";
-    for(const[d,vals] of Object.entries(byDate)){if(d>=start&&d<=end){spend+=vals.spend;clicks+=vals.clicks;impressions+=vals.impressions;if(!igUrl&&vals.igUrl)igUrl=vals.igUrl;}}
+    if(hasCampSel){
+      const acd=S.metaByAdCampByDate[adName]||{};
+      for(const cName of S.selectedCamps){
+        const bd=acd[cName]; if(!bd)continue;
+        for(const[d,vals] of Object.entries(bd)){if(d>=start&&d<=end){spend+=vals.spend;clicks+=vals.clicks;impressions+=vals.impressions;if(!igUrl&&vals.igUrl)igUrl=vals.igUrl;}}
+      }
+    } else {
+      const byDate=S.metaByAdByDate[adName]||{};
+      for(const[d,vals] of Object.entries(byDate)){if(d>=start&&d<=end){spend+=vals.spend;clicks+=vals.clicks;impressions+=vals.impressions;if(!igUrl&&vals.igUrl)igUrl=vals.igUrl;}}
+    }
     if(spend===0)continue;
     if(!igUrl)igUrl=meta.igUrl||"";
-    // Sum leads/infos/reais across all Ad IDs associated with this ad name
+    // Leads/infos/reais/ganhos por Ad ID. Com campanha selecionada, usa só os Ad IDs
+    // pertencentes à(s) campanha(s) selecionada(s) (cada Ad ID vive em 1 campanha).
     let leads=0,infos=0,reais=0,ganhos=0;
-    for(const adId of(meta.adIds||[])){
+    const adIdList=hasCampSel
+      ? [...(meta.adIds||[])].filter(id=>S.selectedCamps.has(S.adIdToCamp[id]))
+      : [...(meta.adIds||[])];
+    for(const adId of adIdList){
       for(const[d,n] of Object.entries(S.leadsByAdId[adId]||{})){if(d>=start&&d<=end)leads+=n;}
       for(const[d,n] of Object.entries(S.infoByAdId[adId]||{})){if(d>=start&&d<=end)infos+=n;}
       for(const[d,n] of Object.entries(S.realByAdId[adId]||{})){if(d>=start&&d<=end)reais+=n;}
