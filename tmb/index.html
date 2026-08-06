@@ -264,6 +264,9 @@ input[type=date]::-webkit-calendar-picker-indicator:hover{opacity:1}
       <div class="funil-opt" id="fopt-perpetuo" onclick="setFunil('perpetuo')">
         <span class="fopt-dot"></span> TMB - Perpétuo
       </div>
+      <div class="funil-opt" id="fopt-sprint" onclick="setFunil('sprint')">
+        <span class="fopt-dot"></span> TMB - Sprint
+      </div>
       <div class="funil-opt" id="fopt-seguidores" onclick="setFunil('seguidores')">
         <span class="fopt-dot"></span> TMB - Seguidores
       </div>
@@ -306,6 +309,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover{opacity:1}
   <div id="page-anuncios"  class="page"></div>
   <div id="page-resumo"    class="page"></div>
   <div id="page-planejamento" class="page"></div>
+  <div id="page-paginas"   class="page"></div>
 </div>
 
 <script>
@@ -720,8 +724,86 @@ function buildPerpetuo(metaRows,googRows,hsRows,mbRows,fichasRows){
   };
 }
 
+// ── Sprint (captação de lead p/ aula) ─────────────────────────────────────
+// Funil separado do Perpétuo. Só Meta (o investimento roda só lá). Considera
+// APENAS campanhas/anúncios cujo nome contém "sprint" (mesma tag que aparece
+// nas UTMs dos leads, ex. "tmb_fev26-sprint-adv03_..."). Leads são os mesmos da
+// "Base leads HubSpot" (+ MetaBase/Fichas dedup), mas atribuídos só às campanhas
+// de Sprint — os do Perpétuo (e orgânicos, sem tag) ficam de fora.
+// Fonte do Sprint: aba dedicada "Base Meta - Sprint" (só campanhas de Sprint).
+// O gasto/anúncios vêm inteiros dessa aba; os leads são cruzados da "Base leads
+// HubSpot" (+ MetaBase/Fichas dedup) pela UTM → ID do anúncio (utm_content) e da
+// campanha (utm_medium), batendo com os IDs presentes na aba Sprint.
+function buildSprint(sprintMetaRows,hsRows,mbRows,fichasRows){
+  // dedupeLeads grava S.leadDedup (números do Perpétuo) — preservamos.
+  const _saved=S.leadDedup;
+  const unified=dedupeLeads(hsRows,mbRows,fichasRows||[]);
+  S.leadDedup=_saved;
+  const agg=processAdSource(sprintMetaRows||[],META_CFG,"");
+  // Escopo = todos os IDs de anúncio/campanha da aba Sprint. Leads entram por
+  // cruzamento de ID (UTM). allPaid = próprio escopo → tudo fora vira "organic",
+  // que zeramos (leads sem match no Sprint não pertencem a este funil).
+  const scope={adIds:agg.adIds,campIds:agg.campIds,idToCamp:agg.idToCamp};
+  const leads=buildLeadsFor(unified,scope,scope);
+  for(const d in leads.leadsD){ leads.leadsD[d].organic=0; }
+  leads.infoDOrg={}; leads.infoRealOrgD={}; leads.ganhoDOrg={};
+  // Leads BRUTOS (não-dedup) da HubSpot cruzados com a aba Sprint via UTM.
+  const rawTrafD={};
+  for(const r of (hsRows||[])){
+    const d=toISOLead(r["Data Criação Lead"]||r["Data/hora de criação do objeto"]||"");
+    if(!d)continue;
+    const adId=trailId(r["utm_content_last_hr"]), campId=trailId(r["utm_medium_last_hr"]);
+    if((adId&&scope.adIds.has(adId))||(campId&&scope.campIds.has(campId)))rawTrafD[d]=(rawTrafD[d]||0)+1;
+  }
+  const totLeads=Object.values(leads.leadsD).reduce((a,x)=>a+x.traffic,0);
+  console.log(`[TMB] Sprint: ${(sprintMetaRows||[]).length} linhas (aba Base Meta - Sprint) · ${Object.keys(agg.byCamp).length} campanhas · ${totLeads} leads cruzados via UTM`);
+  return {meta:{byDate:agg.byDate,byAd:agg.byAd,byAdByDate:agg.byAdByDate,byCamp:agg.byCamp,byCampByDate:agg.byCampByDate,byAdCampByDate:agg.byAdCampByDate,adIdToCamp:agg.adIdToCamp,...leads,rawTrafD}};
+}
+
+// ── Base GA4 (aba "Páginas") ──────────────────────────────────────────────
+// Sessões das landing pages de versão, só tráfego pago do Meta. Filtro (por
+// LETRA de coluna, pois a aba tem dois cabeçalhos "Fonte" I e J):
+//   • I (idx 8) = "Ads"   • J (idx 9) = "Meta"   • E (idx 4) = Page Path exato.
+// Soma Sessions (H, idx 7) por dia → S.ga4SessByDate. Alimenta Connect Rate e
+// Conversão da Página junto com cliques/leads da Base Meta (Perpétuo).
+// Páginas aceitas: o texto EXATO da versão, com ou sem barra (ex.: /tmb-v1/ e
+// /tmb-v1, /v2/ e /v2). Normaliza tirando as barras das pontas; exclui caminhos
+// com texto extra como /homolog-tmb-v1/ ou /v3-vsl/.
+const GA4_PAGE_TOKENS=new Set(["tmb-v1","tmb-v2","tmb-v3","v1","v2","v3"]);
+function _ga4PageOk(p){
+  const t=String(p||"").trim().replace(/^\/+/,"").replace(/\/+$/,"").toLowerCase();
+  return GA4_PAGE_TOKENS.has(t);
+}
+function buildGA4(json){
+  const rows=(json&&json.values)||[];
+  const out={};
+  for(let i=1;i<rows.length;i++){
+    const r=rows[i]; if(!r)continue;
+    const src=(r[8]||"").trim();   // I = Fonte (Ads/Orgânico)
+    const med=(r[9]||"").trim();   // J = Fonte (Meta/Google/Outros)
+    const page=(r[4]||"").trim();  // E = Page Path
+    if(src!=="Ads"||med!=="Meta")continue;
+    if(!_ga4PageOk(page))continue;
+    let raw=(r[0]||"").trim().split(" ")[0];  // A = Date
+    const mm=raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    const d=mm?`${mm[1]}-${mm[2].padStart(2,"0")}-${mm[3].padStart(2,"0")}`:toISO(raw);
+    if(!d)continue;
+    const sess=parseInt(r[7]||0)||0;  // H = Sessions
+    out[d]=(out[d]||0)+sess;
+  }
+  S.ga4SessByDate=out;
+  const tot=Object.values(out).reduce((a,b)=>a+b,0);
+  console.log(`[TMB] GA4 (Páginas): ${Object.keys(out).length} dias · ${tot} sessões (Ads·Meta·v1/v2/v3)`);
+}
+
 function applyChannel(ch){
   const c=S._chan&&S._chan[ch];if(!c)return;
+  applyChanObj(c);
+}
+// Copia um objeto de canal (byDate/leadsD/...) para o estado ativo. Usado pelo
+// Perpétuo (via applyChannel) e pelo Sprint (canal Meta filtrado por "sprint").
+function applyChanObj(c){
+  if(!c)return;
   S.meta=c.byDate;S.metaByAd=c.byAd;S.metaByAdByDate=c.byAdByDate;
   S.metaByCamp=c.byCamp;S.metaByCampByDate=c.byCampByDate;
   S.metaByAdCampByDate=c.byAdCampByDate||{};S.adIdToCamp=c.adIdToCamp||{};
@@ -740,7 +822,7 @@ function setChannel(ch){
 }
 function renderChannelBar(){
   const el=document.getElementById("chan-bar");if(!el)return;
-  if(S.currentFunil!=="perpetuo"||S.loading||S.error||S.firstLoad){el.style.display="none";return;}
+  if(S.currentFunil!=="perpetuo"||S.currentPage==="paginas"||S.loading||S.error||S.firstLoad){el.style.display="none";return;}
   el.style.display="block";
   const chans=[{id:"consolidado",lbl:"◉ Consolidado"},{id:"meta",lbl:"Meta"},{id:"google",lbl:"Google"}];
   el.innerHTML=`<span class="chan-lbl">Tráfego:</span>`+chans.map(c=>`<button class="chan-tab${S.channel===c.id?" on":""}" onclick="setChannel('${c.id}')">${c.lbl}</button>`).join("");
@@ -751,7 +833,7 @@ const SHEET_CFG={
   id:"1zjWFy5swErdvgmfqLbCk0hhyb4DwdRo5Qszbnwd-YV8",
   useSheets:true,    // leitura ao vivo LIGADA (planilha pública, colunas conferidas em 16/07/2026)
   refreshMin:60,     // auto-atualização em minutos (1h)
-  tabs:{ meta:"Base Meta", google:"Base Google", leadsHS:"Base leads HubSpot", leadsMB:"Base Leads MetaBase", seg:"Base seguidores", links:"Link Ads Distribuição", fichas:"Base Fichas V2" },
+  tabs:{ meta:"Base Meta", metaSprint:"Base Meta - Sprint", google:"Base Google", leadsHS:"Base leads HubSpot", leadsMB:"Base Leads MetaBase", seg:"Base seguidores", links:"Link Ads Distribuição", fichas:"Base Fichas V2", ga4:"Base GA4" },
 };
 
 // ── Mapa de links do anúncio (aba "Link Ads Distribuição") ──────────────────
@@ -932,8 +1014,29 @@ async function loadData(force=false){
     console.log("[TMB] Meta:",metaRows.length,"| Google:",googRows.length,"| HubSpot:",hsRows.length,"| MetaBase:",mbRows.length,"| Fichas V2:",fichasRows.length);
     S._chan=buildPerpetuo(metaRows,googRows,hsRows,mbRows,fichasRows);
     if(S.leadDedup)console.log("[TMB] Leads únicos:",S.leadDedup.total,"| infoprodutores:",S.leadDedup.infoprodutores,"| info real:",S.leadDedup.reais);
+    // ── Funil Sprint: gasto/anúncios vêm da aba "Base Meta - Sprint"; leads
+    //    cruzados da HubSpot via UTM. Best-effort — se a aba faltar, Sprint fica vazio. ──
+    let sprintMetaRows=[];
+    try{
+      if(S.dataSource==="sheets"){
+        const spj=await fetchSheet(SHEET_CFG.tabs.metaSprint);
+        const spr=parseSheet(spj);
+        if(hasCol(spr,"Ad ID"))sprintMetaRows=spr;
+        else console.warn(`[TMB] aba "${SHEET_CFG.tabs.metaSprint}" sem 'Ad ID' → Sprint vazio`);
+      }
+    }catch(e){ console.warn("[TMB] Base Meta - Sprint indisponível → Sprint vazio:",e.message); }
+    S._sprintChan=buildSprint(sprintMetaRows,hsRows,mbRows,fichasRows);
+    // ── Base GA4 (aba "Páginas"): sessões das LPs de versão, tráfego pago Meta. ──
+    S.ga4SessByDate={};
+    try{
+      if(S.dataSource==="sheets"){
+        const gj=await fetchSheet(SHEET_CFG.tabs.ga4);
+        buildGA4(gj);
+      }
+    }catch(e){ console.warn("[TMB] Base GA4 indisponível → Páginas vazio:",e.message); S.ga4SessByDate={}; }
     if(!S.channel)S.channel="consolidado";
-    applyChannel(S.channel);
+    if(S.currentFunil==="sprint"&&S._sprintChan)applyChanObj(S._sprintChan.meta);
+    else applyChannel(S.channel);
 
     // ── Seguidores: aba "Base seguidores" — só campanhas "distribuicao" ──
     // Investimento e TODAS as métricas do resumo consideram apenas campanhas
@@ -1245,6 +1348,7 @@ function setFunil(funil){
   S.selectedCamps=new Set(); S.selectedAds=new Set();
   S.manualSpendHoje={};
   if(funil==="perpetuo")applyChannel(S.channel||"consolidado");
+  else if(funil==="sprint"){ S.channel="meta"; if(S._sprintChan)applyChanObj(S._sprintChan.meta); }
   const m=document.getElementById("funil-menu");
   if(m)m.style.display="none";
   render();
@@ -1257,11 +1361,12 @@ document.addEventListener("click",()=>{
 function renderHeader(){
   const p=S.currentPage;
   const isSeg=S.currentFunil==="seguidores";
+  const isSprint=S.currentFunil==="sprint";
   const fn=document.getElementById("funil-name");
-  if(fn)fn.textContent=isSeg?"TMB - Seguidores":"TMB - Perpétuo";
+  if(fn)fn.textContent=isSeg?"TMB - Seguidores":(isSprint?"TMB - Sprint":"TMB - Perpétuo");
   const fs=document.getElementById("funil-status");if(fs)fs.textContent="ativo";
   // Update dropdown active state
-  ["perpetuo","seguidores"].forEach(f=>{
+  ["perpetuo","sprint","seguidores"].forEach(f=>{
     const el=document.getElementById("fopt-"+f);
     if(el)el.className="funil-opt"+(S.currentFunil===f?" fopt-active":"");
   });
@@ -1270,9 +1375,18 @@ function renderHeader(){
     {id:"principal",label:"⊞ Principal"},
     {id:"funil",label:"▽ Métricas do funil"},
     {id:"trafego",label:"⟳ Métricas tráfego"},
+    {id:"paginas",label:"📄 Páginas"},
     {id:"anuncios",label:"◈ Campanhas / Anúncios"},
     {id:"resumo",label:"📋 Resumo diário"},
     {id:"planejamento",label:"🗓 Planejamento"},
+  ];
+  // Sprint: mesmo funil do Perpétuo, mas SEM Planejamento (não roda plano de investimento aqui).
+  const TABS_SPRINT=[
+    {id:"principal",label:"⊞ Principal"},
+    {id:"funil",label:"▽ Métricas do funil"},
+    {id:"trafego",label:"⟳ Métricas tráfego"},
+    {id:"anuncios",label:"◈ Campanhas / Anúncios"},
+    {id:"resumo",label:"📋 Resumo diário"},
   ];
   const TABS_SEG=[
     {id:"principal",label:"⊞ Principal"},
@@ -1280,7 +1394,7 @@ function renderHeader(){
     {id:"anuncios",label:"◈ Campanhas / Anúncios"},
     {id:"resumo",label:"📋 Resumo diário"},
   ];
-  const TABS=isSeg?TABS_SEG:TABS_PERP;
+  const TABS=isSeg?TABS_SEG:(isSprint?TABS_SPRINT:TABS_PERP);
   tabsEl.innerHTML=TABS.map(t=>`<button class="htab${p===t.id?" htab-active":""}" onclick="navTo('${t.id}')">${t.label}</button>`).join("");
   const per=getCurrentPeriod();
   const QUICKS=["hoje","ontem","3d","7d","30d","mes"];
@@ -1657,6 +1771,7 @@ function statusLegend(){
 // ── Render Principal ──────────────────────────────────────────────────────
 function renderPrincipal(){
   const el=document.getElementById("page-principal");if(!el)return;
+  const isSprint=S.currentFunil==="sprint";   // Sprint: sem infoprodutor/info real/ganho
   const daily=getDaily(S.startDate,S.endDate);
   const tot=getTotals(daily);
   const totT=getTotalsT(getDailyT(S.startDate,S.endDate));
@@ -1676,9 +1791,10 @@ function renderPrincipal(){
     ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:13px;margin-bottom:13px">
       ${kpiCard("Investimento",fBRL(tot.spend),"","var(--text-strong)")}
-      ${kpiCard("Leads (tráfego)",tot.trafficLeads.toLocaleString("pt-BR"),`orgânico: ${tot.organicLeads} · dedup: ${sumRange(S.rawTrafD).toLocaleString("pt-BR")}→${tot.trafficLeads.toLocaleString("pt-BR")}`,"var(--text-strong)")}
+      ${kpiCard("Leads (tráfego)",tot.trafficLeads.toLocaleString("pt-BR"),isSprint?`dedup: ${sumRange(S.rawTrafD).toLocaleString("pt-BR")}→${tot.trafficLeads.toLocaleString("pt-BR")}`:`orgânico: ${tot.organicLeads} · dedup: ${sumRange(S.rawTrafD).toLocaleString("pt-BR")}→${tot.trafficLeads.toLocaleString("pt-BR")}`,"var(--text-strong)")}
       ${kpiCard("Custo por Lead",fBRL(cpl),`meta ${fBRL(META_CPL)}`,cplC,false,cpl,META_CPL,false)}
     </div>
+    ${isSprint?"":`
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:13px;margin-bottom:16px">
       ${kpiCard("Infoprodutores",(totT.infoprodutor||0).toLocaleString("pt-BR"),`orgânico: ${infoOrg}`,"var(--text-strong)")}
       ${kpiCard("Custo por Infoprodutor",totT.custoInfo>0?fBRL(totT.custoInfo):"—",`meta ${fBRL(METAS_T.custoInfo.val)}`,totT.custoInfo>0?statusColor(totT.custoInfo,METAS_T.custoInfo.val,false):"var(--text-strong)",false,totT.custoInfo,METAS_T.custoInfo.val,false)}
@@ -1688,7 +1804,7 @@ function renderPrincipal(){
     <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:13px;margin-bottom:16px">
       ${kpiCard("Ganhos",(totT.ganho||0).toLocaleString("pt-BR"),`orgânico: ${ganhoOrg} · contrato assinado`,"#f59e0b")}
       ${kpiCard("Custo por Ganho",totT.custoGanho>0?fBRL(totT.custoGanho):"—","investimento ÷ contratos assinados",totT.custoGanho>0?"#f59e0b":"var(--text-strong)")}
-    </div>
+    </div>`}
     <div class="cc" style="margin-bottom:12px;position:relative">
       <div class="ch">
         <span class="ct">Investimento × Custo por Lead</span>
@@ -1707,6 +1823,7 @@ function renderPrincipal(){
       </div>
       <div style="position:relative"><canvas id="c-leads"></canvas><div class="tip" id="t-leads"></div></div>
     </div>
+    ${isSprint?"":`
     <div class="cc" style="position:relative;margin-top:12px">
       <div class="ch">
         <span class="ct">Volume de Infoprodutores</span>
@@ -1720,14 +1837,12 @@ function renderPrincipal(){
         <div class="lg"><span class="li"><span class="ld" style="background:${CHART_ORG}"></span>Info reais/dia</span></div>
       </div>
       <div style="position:relative"><canvas id="c-inforeal"></canvas><div class="tip" id="t-inforeal"></div></div>
-    </div>`;
+    </div>`}`;
   const dailyT=getDailyT(S.startDate,S.endDate);
   requestAnimationFrame(()=>{
     const mW=document.getElementById("c-dual")?.parentElement?.offsetWidth||720;
     drawDualTMB("c-dual",daily,mW,230);
     drawLeadsBar("c-leads",daily,mW,180);
-    drawCountBar("c-info",dailyT,"infoprodutor",CHART_CPL,mW,180);
-    drawCountBar("c-inforeal",dailyT,"infoReal",CHART_ORG,mW,180);
     setupTip("c-dual","t-dual",daily,[
       {key:"spend",color:CHART_INV,name:"Investimento"},
       {key:"cpl",color:CHART_CPL,name:"CPL"},
@@ -1735,12 +1850,16 @@ function renderPrincipal(){
     setupTip("c-leads","t-leads",daily,[
       {key:"trafficLeads",color:CHART_LEADS,name:"Leads",fmt:v=>Math.round(v).toString()},
     ],40,12);
-    setupTip("c-info","t-info",dailyT,[
-      {key:"infoprodutor",color:CHART_CPL,name:"Infoprodutores",fmt:v=>Math.round(v).toString()},
-    ],40,12);
-    setupTip("c-inforeal","t-inforeal",dailyT,[
-      {key:"infoReal",color:CHART_ORG,name:"Info reais",fmt:v=>Math.round(v).toString()},
-    ],40,12);
+    if(!isSprint){
+      drawCountBar("c-info",dailyT,"infoprodutor",CHART_CPL,mW,180);
+      drawCountBar("c-inforeal",dailyT,"infoReal",CHART_ORG,mW,180);
+      setupTip("c-info","t-info",dailyT,[
+        {key:"infoprodutor",color:CHART_CPL,name:"Infoprodutores",fmt:v=>Math.round(v).toString()},
+      ],40,12);
+      setupTip("c-inforeal","t-inforeal",dailyT,[
+        {key:"infoReal",color:CHART_ORG,name:"Info reais",fmt:v=>Math.round(v).toString()},
+      ],40,12);
+    }
   });
 }
 
@@ -1915,6 +2034,8 @@ function renderTrafego(){
 // ── Render Anúncios ─────────────────────────────────────────────────────────
 function renderAnuncios(){
   const el=document.getElementById("page-anuncios");if(!el)return;
+  const isSprint=S.currentFunil==="sprint";   // Sprint: sem colunas de info/real/ganho
+  const IG=!isSprint;                          // IG = mostrar Infos/Info Real/Ganhos
   const start=S.startDate,end=S.endDate;
 
   function sumLeads(map,key){ let t=0;for(const[d,n]of Object.entries(map[key]||{})){if(d>=start&&d<=end)t+=n;}return t; }
@@ -2018,14 +2139,16 @@ function renderAnuncios(){
       lines.push(`Leads:\t${a.leads}`);
       lines.push(`Custo por Lead:\t${a.leads>0?fBRL(a.cpl):"—"}`);
       lines.push(``);
-      lines.push(`Infoprodutores:\t${a.infos}`);
-      lines.push(`Custo por Infoprodutor:\t${a.infos>0?fBRL(a.custoInfo):"—"}`);
-      lines.push(`Infoprodutores Reais:\t${a.reais}`);
-      lines.push(`Custo por Info Real:\t${a.reais>0?fBRL(a.custoInfoReal):"—"}`);
-      lines.push(``);
-      lines.push(`Ganhos:\t${a.ganhos}`);
-      lines.push(`Custo por Ganho:\t${a.ganhos>0?fBRL(a.custoGanho):"—"}`);
-      lines.push(``);
+      if(IG){
+        lines.push(`Infoprodutores:\t${a.infos}`);
+        lines.push(`Custo por Infoprodutor:\t${a.infos>0?fBRL(a.custoInfo):"—"}`);
+        lines.push(`Infoprodutores Reais:\t${a.reais}`);
+        lines.push(`Custo por Info Real:\t${a.reais>0?fBRL(a.custoInfoReal):"—"}`);
+        lines.push(``);
+        lines.push(`Ganhos:\t${a.ganhos}`);
+        lines.push(`Custo por Ganho:\t${a.ganhos>0?fBRL(a.custoGanho):"—"}`);
+        lines.push(``);
+      }
       lines.push(`CPC:\t${fBRL(a.cpc)}`);
       lines.push(`CPM:\t${fBRL(a.cpm)}`);
       lines.push(`CTR:\t${fPct(a.ctr)}`);
@@ -2052,12 +2175,12 @@ function renderAnuncios(){
       <td style="${_TDR};color:var(--text-strong)">${fBRL(T.spend)}</td>
       <td style="${_TDR};color:var(--text-strong)">${T.leads}</td>
       <td style="${_TDR};color:var(--muted)">${T.cpl>0?fBRL(T.cpl):"—"}</td>
-      <td style="${_TDR};color:var(--text-strong)">${T.infos}</td>
+      ${IG?`<td style="${_TDR};color:var(--text-strong)">${T.infos}</td>
       <td style="${_TDR};color:var(--muted)">${T.custoInfo>0?fBRL(T.custoInfo):"—"}</td>
       <td style="${_TDR};color:#34d399">${T.reais}</td>
       <td style="${_TDR};color:#34d399">${T.custoInfoReal>0?fBRL(T.custoInfoReal):"—"}</td>
       <td style="${_TDR};color:#f59e0b">${T.ganhos}</td>
-      <td style="${_TDR};color:#f59e0b">${T.custoGanho>0?fBRL(T.custoGanho):"—"}</td>
+      <td style="${_TDR};color:#f59e0b">${T.custoGanho>0?fBRL(T.custoGanho):"—"}</td>`:""}
       <td style="${_TDR};color:var(--muted)">${fPct(T.ctr)}</td>
       <td style="${_TDR};color:var(--muted)">${fBRL(T.cpm)}</td>
       <td style="${_TDR};color:var(--muted)">${fBRL(T.cpc)}</td>
@@ -2100,6 +2223,7 @@ function renderAnuncios(){
       ${kpiCard("Custo por Lead",totCpl>0?fBRL(totCpl):"—",`meta ${fBRL(META_CPL)}`,totCpl>0?sc(totCpl,META_CPL,false):"var(--text-strong)",false,totCpl,META_CPL,false)}
       ${kpiCard("CTR",fPct(totCtr),`meta ${METAS_T.ctr.val}%`,sc(totCtr,METAS_T.ctr.val,true),false,totCtr,METAS_T.ctr.val,true)}
     </div>
+    ${IG?`
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:13px;margin-bottom:20px">
       ${kpiCard("Infoprodutores",tot.infos.toLocaleString("pt-BR"),"vendem info","var(--text-strong)")}
       ${kpiCard("Custo por Infoprodutor",totCustoInfo>0?fBRL(totCustoInfo):"—",`meta ${fBRL(METAS_T.custoInfo.val)}`,totCustoInfo>0?sc(totCustoInfo,METAS_T.custoInfo.val,false):"var(--text-strong)",false,totCustoInfo,METAS_T.custoInfo.val,false)}
@@ -2109,7 +2233,7 @@ function renderAnuncios(){
     <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:13px;margin-bottom:20px">
       ${kpiCard("Ganhos",tot.ganhos.toLocaleString("pt-BR"),"contrato assinado","#f59e0b")}
       ${kpiCard("Custo por Ganho",totCustoGanho>0?fBRL(totCustoGanho):"—","investimento ÷ ganhos",totCustoGanho>0?"#f59e0b":"var(--text-strong)")}
-    </div>
+    </div>`:""}
 
     <!-- Campanhas -->
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
@@ -2129,12 +2253,12 @@ function renderAnuncios(){
           ${thC("spend","Investimento",true)}
           ${thC("leads","Leads",true)}
           ${thC("cpl","Custo por Lead",true)}
-          ${thC("infos","Infos",true)}
+          ${IG?`${thC("infos","Infos",true)}
           ${thC("custoInfo","Custo/Info",true)}
           ${thC("reais","Infos Reais",true)}
           ${thC("custoInfoReal","Custo/Info Real",true)}
           ${thC("ganhos","Ganhos",true)}
-          ${thC("custoGanho","Custo/Ganho",true)}
+          ${thC("custoGanho","Custo/Ganho",true)}`:""}
           ${thC("ctr","CTR",true)}
           ${thC("cpm","CPM",true)}
           ${thC("cpc","CPC",true)}
@@ -2148,12 +2272,12 @@ function renderAnuncios(){
               <td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text-strong)">${fBRL(c.spend)}</td>
               <td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace">${c.leads}</td>
               <td style="padding:9px 14px;text-align:right;color:${c.cpl>0?sc(c.cpl,META_CPL,false):"var(--muted)"}">${c.cpl>0?fBRL(c.cpl):"—"}</td>
-              <td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace">${c.infos}</td>
+              ${IG?`<td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace">${c.infos}</td>
               <td style="padding:9px 14px;text-align:right;color:${c.custoInfo>0?sc(c.custoInfo,METAS_T.custoInfo.val,false):"var(--muted)"}">${c.custoInfo>0?fBRL(c.custoInfo):"—"}</td>
               <td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:#34d399">${c.reais}</td>
               <td style="padding:9px 14px;text-align:right;color:${c.custoInfoReal>0?"#34d399":"var(--muted)"}">${c.custoInfoReal>0?fBRL(c.custoInfoReal):"—"}</td>
               <td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:#f59e0b;font-weight:600">${c.ganhos}</td>
-              <td style="padding:9px 14px;text-align:right;color:${c.custoGanho>0?"#f59e0b":"var(--muted)"}">${c.custoGanho>0?fBRL(c.custoGanho):"—"}</td>
+              <td style="padding:9px 14px;text-align:right;color:${c.custoGanho>0?"#f59e0b":"var(--muted)"}">${c.custoGanho>0?fBRL(c.custoGanho):"—"}</td>`:""}
               <td style="padding:9px 14px;text-align:right;color:${sc(c.ctr,METAS_T.ctr.val,true)}">${fPct(c.ctr)}</td>
               <td style="padding:9px 14px;text-align:right;color:${sc(c.cpm,METAS_T.cpm.val,false)}">${fBRL(c.cpm)}</td>
               <td style="padding:9px 14px;text-align:right;color:${sc(c.cpc,METAS_T.cpc.val,false)}">${fBRL(c.cpc)}</td>
@@ -2182,12 +2306,12 @@ function renderAnuncios(){
           ${thC("spend","Investimento",false)}
           ${thC("leads","Leads",false)}
           ${thC("cpl","Custo por Lead",false)}
-          ${thC("infos","Infos",false)}
+          ${IG?`${thC("infos","Infos",false)}
           ${thC("custoInfo","Custo/Info",false)}
           ${thC("reais","Infos Reais",false)}
           ${thC("custoInfoReal","Custo/Info Real",false)}
           ${thC("ganhos","Ganhos",false)}
-          ${thC("custoGanho","Custo/Ganho",false)}
+          ${thC("custoGanho","Custo/Ganho",false)}`:""}
           ${thC("ctr","CTR",false)}
           ${thC("cpm","CPM",false)}
           ${thC("cpc","CPC",false)}
@@ -2202,12 +2326,12 @@ function renderAnuncios(){
               <td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text-strong)">${fBRL(a.spend)}</td>
               <td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace">${a.leads}</td>
               <td style="padding:9px 14px;text-align:right;color:${a.cpl>0?sc(a.cpl,META_CPL,false):"var(--muted)"}">${a.cpl>0?fBRL(a.cpl):"—"}</td>
-              <td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace">${a.infos}</td>
+              ${IG?`<td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace">${a.infos}</td>
               <td style="padding:9px 14px;text-align:right;color:${a.custoInfo>0?sc(a.custoInfo,METAS_T.custoInfo.val,false):"var(--muted)"}">${a.custoInfo>0?fBRL(a.custoInfo):"—"}</td>
               <td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:#34d399">${a.reais}</td>
               <td style="padding:9px 14px;text-align:right;color:${a.custoInfoReal>0?"#34d399":"var(--muted)"}">${a.custoInfoReal>0?fBRL(a.custoInfoReal):"—"}</td>
               <td style="padding:9px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:#f59e0b;font-weight:600">${a.ganhos}</td>
-              <td style="padding:9px 14px;text-align:right;color:${a.custoGanho>0?"#f59e0b":"var(--muted)"}">${a.custoGanho>0?fBRL(a.custoGanho):"—"}</td>
+              <td style="padding:9px 14px;text-align:right;color:${a.custoGanho>0?"#f59e0b":"var(--muted)"}">${a.custoGanho>0?fBRL(a.custoGanho):"—"}</td>`:""}
               <td style="padding:9px 14px;text-align:right;color:${sc(a.ctr,METAS_T.ctr.val,true)}">${fPct(a.ctr)}</td>
               <td style="padding:9px 14px;text-align:right;color:${sc(a.cpm,METAS_T.cpm.val,false)}">${fBRL(a.cpm)}</td>
               <td style="padding:9px 14px;text-align:right;color:${sc(a.cpc,METAS_T.cpc.val,false)}">${fBRL(a.cpc)}</td>
@@ -2248,6 +2372,8 @@ function renderAnuncios(){
 // ── Render Resumo ─────────────────────────────────────────────────────────
 function renderResumo(){
   const el=document.getElementById("page-resumo");if(!el)return;
+  const isSprint=S.currentFunil==="sprint";   // Sprint: sem info/real/ganho e sem Distr. Verba (só Meta)
+  const IG=!isSprint;
   const today=todayISO(), yest=yesterdayISO();
   const start=S.startDate||today, end=S.endDate||today;
 
@@ -2309,7 +2435,7 @@ function renderResumo(){
 
   function blockText(label,m,isTotal){
     const lines=[`*${label}*`,``,`Investimento:\t${fBRLR(m.spend)}`];
-    if(isTotal){
+    if(isTotal&&IG){
       lines.push(`Distr. Verba — Meta:\t${(m.pctMeta||0).toFixed(2)}%`);
       lines.push(`Distr. Verba — Google:\t${(m.pctGoogle||0).toFixed(2)}%`);
     }
@@ -2317,12 +2443,14 @@ function renderResumo(){
     lines.push(`Aplicações totais:\t${m.aplicacoes||0}`);
     lines.push(`Custo por Aplicação:\t${fBRLR(m.custoAplic)}\t${em(m.custoAplic,METAS_T.custoAplic.val,false)} Meta: R$ ${METAS_T.custoAplic.val}`);
     lines.push(``);
-    lines.push(`Qtd Infoprodutor:\t${m.infoprodutor||0}`);
-    lines.push(`Custo por Infoprodutor:\t${fBRLR(m.custoInfo)}\t${em(m.custoInfo,METAS_T.custoInfo.val,false)} Meta: R$ ${METAS_T.custoInfo.val}`);
-    lines.push(`Qtd Info Real (vende info):\t${m.infoReal||0}`);
-    lines.push(`Custo por Info Real:\t${m.custoInfoReal>0?fBRLR(m.custoInfoReal):"—"}`);
-    lines.push(`% Aplic. de Infoprodutor:\t${(m.pctInfoAplic||0).toFixed(1)}%\t${em(m.pctInfoAplic,METAS_T.pctInfoAplic.val,true)} Meta: ${METAS_T.pctInfoAplic.val}%`);
-    lines.push(``);
+    if(IG){
+      lines.push(`Qtd Infoprodutor:\t${m.infoprodutor||0}`);
+      lines.push(`Custo por Infoprodutor:\t${fBRLR(m.custoInfo)}\t${em(m.custoInfo,METAS_T.custoInfo.val,false)} Meta: R$ ${METAS_T.custoInfo.val}`);
+      lines.push(`Qtd Info Real (vende info):\t${m.infoReal||0}`);
+      lines.push(`Custo por Info Real:\t${m.custoInfoReal>0?fBRLR(m.custoInfoReal):"—"}`);
+      lines.push(`% Aplic. de Infoprodutor:\t${(m.pctInfoAplic||0).toFixed(1)}%\t${em(m.pctInfoAplic,METAS_T.pctInfoAplic.val,true)} Meta: ${METAS_T.pctInfoAplic.val}%`);
+      lines.push(``);
+    }
     lines.push(`Tx conv formulário:\t${(m.txConvForm||0).toFixed(1)}%\t${em(m.txConvForm,METAS_T.txConvForm.val,true)} Meta: ${METAS_T.txConvForm.val}%`);
     lines.push(`Connect Rate:\t${(m.connect||0).toFixed(1)}%\t${em(m.connect,METAS_T.connect.val,true)} Meta: ${METAS_T.connect.val}%`);
     lines.push(``);
@@ -2333,7 +2461,7 @@ function renderResumo(){
   }
 
   const resumoText=
-`*Funil de Perpétuo - LP Página - TMB - Consolidado*\t\t
+`*${isSprint?"Funil de Sprint - LP Página - TMB - Meta":"Funil de Perpétuo - LP Página - TMB - Consolidado"}*\t\t
 
 _${dateLabel}_\t\t
 
@@ -2343,8 +2471,14 @@ _${dateLabel}_\t\t
 
 ⬇️ ${blockText("Hoje",hoje,false)}`;
 
+  // Sprint: remove as anotações de meta ("🟢 Meta: ...") do texto do WhatsApp.
+  const resumoTextFinal = isSprint
+    ? resumoText.replace(/\t[^\t\n]*Meta:[^\n]*/g,"")
+    : resumoText;
+
   // Visual blocks
   function row(lbl,val,metaStr,emoji){
+    if(isSprint){metaStr="";emoji="";}   // Sprint: resumo sem metas (por enquanto)
     return `<div style="display:grid;grid-template-columns:220px 1fr auto;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04);align-items:center">
       <span style="color:var(--muted);font-size:12px">${lbl}</span>
       <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-strong)">${val||"—"}</span>
@@ -2379,18 +2513,18 @@ _${dateLabel}_\t\t
     <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:14px">
       <div style="font-size:13px;font-weight:700;color:var(--text-strong);margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border)">${label}</div>
       ${investRow}
-      ${/Total/.test(label)?row("Distr. Verba — Meta",(m.pctMeta||0).toFixed(1)+"%","",""):""}
-      ${/Total/.test(label)?row("Distr. Verba — Google",(m.pctGoogle||0).toFixed(1)+"%","",""):""}
-      ${/Total/.test(label)?'<div style="height:10px"></div>':""}
+      ${(IG&&/Total/.test(label))?row("Distr. Verba — Meta",(m.pctMeta||0).toFixed(1)+"%","",""):""}
+      ${(IG&&/Total/.test(label))?row("Distr. Verba — Google",(m.pctGoogle||0).toFixed(1)+"%","",""):""}
+      ${(IG&&/Total/.test(label))?'<div style="height:10px"></div>':""}
       ${row("Aplicações totais",(m.aplicacoes||0).toLocaleString("pt-BR"),"","")}
       ${row("Custo por Aplicação",fBRLR(m.custoAplic),`meta R$ ${METAS_T.custoAplic.val}`,em(m.custoAplic,METAS_T.custoAplic.val,false))}
       <div style="height:10px"></div>
-      ${row("Qtd Infoprodutor",(m.infoprodutor||0).toLocaleString("pt-BR"),"","")}
-      ${row("Custo por Infoprodutor",m.custoInfo>0?fBRLR(m.custoInfo):"—",`meta R$ ${METAS_T.custoInfo.val}`,em(m.custoInfo,METAS_T.custoInfo.val,false))}
-      ${row("Qtd Info Real (vende info)",(m.infoReal||0).toLocaleString("pt-BR"),"","")}
-      ${row("Custo por Info Real",m.custoInfoReal>0?fBRLR(m.custoInfoReal):"—","","")}
-      ${row("% Aplic. de Infoprodutor",(m.pctInfoAplic||0).toFixed(1)+"%",`meta ${METAS_T.pctInfoAplic.val}%`,em(m.pctInfoAplic,METAS_T.pctInfoAplic.val,true))}
-      <div style="height:10px"></div>
+      ${IG?row("Qtd Infoprodutor",(m.infoprodutor||0).toLocaleString("pt-BR"),"",""):""}
+      ${IG?row("Custo por Infoprodutor",m.custoInfo>0?fBRLR(m.custoInfo):"—",`meta R$ ${METAS_T.custoInfo.val}`,em(m.custoInfo,METAS_T.custoInfo.val,false)):""}
+      ${IG?row("Qtd Info Real (vende info)",(m.infoReal||0).toLocaleString("pt-BR"),"",""):""}
+      ${IG?row("Custo por Info Real",m.custoInfoReal>0?fBRLR(m.custoInfoReal):"—","",""):""}
+      ${IG?row("% Aplic. de Infoprodutor",(m.pctInfoAplic||0).toFixed(1)+"%",`meta ${METAS_T.pctInfoAplic.val}%`,em(m.pctInfoAplic,METAS_T.pctInfoAplic.val,true)):""}
+      ${IG?'<div style="height:10px"></div>':""}
       ${row("Tx conv formulário",(m.txConvForm||0).toFixed(1)+"%",`meta ${METAS_T.txConvForm.val}%`,em(m.txConvForm,METAS_T.txConvForm.val,true))}
       ${row("Connect Rate",(m.connect||0).toFixed(1)+"%",`meta ${METAS_T.connect.val}%`,em(m.connect,METAS_T.connect.val,true))}
       <div style="height:10px"></div>
@@ -2418,10 +2552,10 @@ _${dateLabel}_\t\t
         ${section("⬇️ Hoje",hoje,true)}
       </div>
       <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;position:sticky;top:70px">
-        <pre id="resumo-preview" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text);white-space:pre-wrap;line-height:1.8;margin:0;user-select:all">${resumoText.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</pre>
+        <pre id="resumo-preview" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text);white-space:pre-wrap;line-height:1.8;margin:0;user-select:all">${resumoTextFinal.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</pre>
       </div>
     </div>`;
-  el._resumoText=resumoText;
+  el._resumoText=resumoTextFinal;
   // Restore focus on manual spend input
   requestAnimationFrame(()=>{
     const _s=document.getElementById('manual-spend-input');
@@ -3110,6 +3244,44 @@ const PLTHR="padding:11px 16px;text-align:right;font-size:9px;font-weight:700;te
 const PLTDL="padding:9px 16px;text-align:left;font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text);border-bottom:1px solid var(--border)";
 const PLTD="padding:9px 16px;text-align:right;font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text);border-bottom:1px solid var(--border);white-space:nowrap";
 
+// ── Render Páginas (Perpétuo) ─────────────────────────────────────────────
+// 2 cartões de média geral: Connect Rate e Conversão da Página.
+// Numerador: Base Meta (Perpétuo) — Action Link Clicks (col C) e Action Leads (col E).
+// Denominador: Sessions da GA4 (col H) filtradas Ads·Meta·LPs v1/v2/v3.
+function renderPaginas(){
+  const el=document.getElementById("page-paginas");if(!el)return;
+  const start=S.startDate,end=S.endDate;
+  const metaBD=(S._chan&&S._chan.meta&&S._chan.meta.byDate)||{};
+  let clicks=0,leads=0,sessions=0;
+  for(const [d,v] of Object.entries(metaBD)){ if((!start||d>=start)&&(!end||d<=end)){ clicks+=(v.clicks||0); leads+=(v.metaLeads||0); } }
+  for(const [d,s] of Object.entries(S.ga4SessByDate||{})){ if((!start||d>=start)&&(!end||d<=end)) sessions+=s; }
+  const connect=sessions>0?(clicks/sessions)*100:0;
+  const convPg =sessions>0?(leads/sessions)*100:0;
+  const nI=n=>Math.round(n||0).toLocaleString("pt-BR");
+  const semGA4=!(S.ga4SessByDate&&Object.keys(S.ga4SessByDate).length);
+  el.innerHTML=`
+    <div class="hdr" style="margin-bottom:6px">
+      <div>
+        <div class="hdr-title">Páginas</div>
+        <div class="hdr-sub">período: ${fDateBR(start)} a ${fDateBR(end)} · tráfego pago Meta · LPs v1/v2/v3 · atualizado em: ${S.updated||"—"}</div>
+      </div>
+    </div>
+    ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
+    ${semGA4?`<div class="err" style="background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.35);color:#fbbf24">Sem dados da aba "Base GA4" no período (ou aba indisponível).</div>`:""}
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:13px;margin-bottom:16px">
+      ${kpiCard("Connect Rate",fPct(connect),`cliques ÷ sessões · ${nI(clicks)} / ${nI(sessions)}`,"var(--text-strong)")}
+      ${kpiCard("Conversão da Página",fPct(convPg),`leads ÷ sessões · ${nI(leads)} / ${nI(sessions)}`,"var(--text-strong)")}
+    </div>
+    <div class="cc" style="padding:16px 18px">
+      <div class="section-lbl" style="margin-top:0">Como é calculado</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.9">
+        <b style="color:var(--text)">Connect Rate</b> = Action Link Clicks (Base Meta) ÷ Sessions (GA4) × 100<br>
+        <b style="color:var(--text)">Conversão da Página</b> = Action Leads (Base Meta) ÷ Sessions (GA4) × 100<br>
+        <span style="color:var(--hint)">Sessões GA4: apenas linhas Ads · Meta · páginas de versão tmb-v1/v2/v3 e v1/v2/v3 (com ou sem barra final; exclui /homolog…/ e /v3-vsl/). Cliques e leads: só Base Meta (Perpétuo).</span>
+      </div>
+    </div>`;
+}
+
 
 function render(){
   renderHeader();
@@ -3136,6 +3308,7 @@ function render(){
   else if(S.currentPage==="anuncios")isSeg?renderAnunciosSeg():renderAnuncios();
   else if(S.currentPage==="resumo")  isSeg?renderResumoSeg():renderResumo();
   else if(S.currentPage==="planejamento") renderPlanejamento();
+  else if(S.currentPage==="paginas") renderPaginas();
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────
