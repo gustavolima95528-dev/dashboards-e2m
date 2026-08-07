@@ -538,6 +538,10 @@ function subDays(iso,n){ return addDays(iso,-n); }
 // ── Format helpers ─────────────────────────────────────────────────────────
 function parseBRL(s){ if(!s||s==="-"||s==="0")return 0;return parseFloat(String(s).replace(/R\$\s*/g,"").replace(/\./g,"").replace(",",".").trim())||0; }
 function parseBRLAbs(s){ return Math.abs(parseBRL(s)); }
+// Gasto: o export da Meta troca o nome desta coluna entre versões (ex.: "valor usado" → "valor gasto").
+// Aceita todas as variações conhecidas e usa a primeira que existir e tiver valor.
+const SPEND_COL_NAMES=["Spend (Cost, Amount Spent)","Valor usado","Valor gasto","Amount Spent","Amount spent","Spend"];
+function getSpendRaw(r){ for(const k of SPEND_COL_NAMES){ const v=r[k]; if(v!==undefined&&v!==null&&v!=="") return v; } return 0; }
 
 // Normaliza status numérico da Eduzz para texto
 function normalizeStatus(s){
@@ -855,7 +859,7 @@ async function loadData(force=false){
     for(const r of parseSheet(mj)){
       const d=toISO(r["Date"]);if(!d)continue;
       if(!mD[d])mD[d]={spend:0,clicks:0,impressions:0,landingViews:0,checkouts:0,purchases:0};
-      mD[d].spend        += parseBRL(r["Spend (Cost, Amount Spent)"]);
+      mD[d].spend        += parseBRL(getSpendRaw(r));
       mD[d].clicks       += parseInt(r["Action Link Clicks"]||0)||0;
       mD[d].impressions  += parseInt(r["Impressions"]||0)||0;
       mD[d].landingViews += parseInt(r["Action Landing Page View"]||0)||0;
@@ -867,7 +871,7 @@ async function loadData(force=false){
       const campName=r["Campaign Name"]||"—";
       const adsetName=r["Adset Name"]||"";
       const country=extractCountryFromAdset(adsetName);
-      const spendV=parseBRL(r["Spend (Cost, Amount Spent)"]);
+      const spendV=parseBRL(getSpendRaw(r));
       const clicksV=parseInt(r["Action Link Clicks"]||0)||0;
       const impressV=parseInt(r["Impressions"]||0)||0;
       const icV      =parseInt(r["Action Omni Initiated Checkout"]||0)||0;
@@ -1020,7 +1024,7 @@ async function loadData(force=false){
     for(const r of parseSheet(distJ)){
       const d=r["Date"]||""; if(!d||d==="Date")continue;
       const _acc=(r["Account Name"]||"").trim();
-      const _rawSpend=parseBRL(r["Spend (Cost, Amount Spent)"]);
+      const _rawSpend=parseBRL(getSpendRaw(r));
       // CA 03 = USD; all others = Mexican Peso, divide by 18
       const spendV=_acc==="CA 03"?_rawSpend:_rawSpend/18;
       const clicksV   =parseInt(r["Action Link Clicks"]||0)||0;
@@ -1090,7 +1094,7 @@ async function loadData(force=false){
     for(const r of parseSheet(aquecMornoJ)){
       const d=r["Date"]||""; if(!d||d==="Date")continue;
       const _acc=(r["Account Name"]||"").trim();
-      const _rawSpend=parseBRL(r["Spend (Cost, Amount Spent)"]);
+      const _rawSpend=parseBRL(getSpendRaw(r));
       const spendV=_acc==="CA 04"?_rawSpend:_rawSpend/18;
       const clicksV   =parseInt(r["Action Link Clicks"]||0)||0;
       const impressV  =parseInt(r["Impressions"]||0)||0;
