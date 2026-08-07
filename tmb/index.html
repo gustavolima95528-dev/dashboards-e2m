@@ -902,7 +902,9 @@ function buildSeguidores(rows){
     // ⬇️ FILTRO distribuicao — pula qualquer campanha que não seja de distribuição
     if(!norm(campName).includes("distribuic")){ skipped++; continue; }
     const d=toISO(r["Dia"]); if(!d)continue;
-    const sp=parseBRL(r["Valor usado (BRL)"]||"0");
+    // Gasto: o Gerenciador exporta a coluna ora como "Valor usado (BRL)", ora
+    // como "Valor gasto (BRL)" — aceitamos os dois para não zerar o investimento.
+    const sp=parseBRL(r["Valor usado (BRL)"]||r["Valor gasto (BRL)"]||"0");
     const cl=parseInt(r["Cliques no link"]||0)||0;
     const im=parseInt(r["Impressões"]||0)||0;
     const pv=parseInt(r["Visitas ao perfil do Instagram"]||0)||0;
