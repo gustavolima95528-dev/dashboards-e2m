@@ -776,7 +776,8 @@ function _ga4PageOk(p){
 }
 function buildGA4(json){
   const rows=(json&&json.values)||[];
-  const out={};
+  const out={};    // sessões por dia (col H)
+  const pvOut={};  // page views por dia (col G) — usado no Connect Rate
   for(let i=1;i<rows.length;i++){
     const r=rows[i]; if(!r)continue;
     const src=(r[8]||"").trim();   // I = Fonte (Ads/Orgânico)
@@ -788,12 +789,16 @@ function buildGA4(json){
     const mm=raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
     const d=mm?`${mm[1]}-${mm[2].padStart(2,"0")}-${mm[3].padStart(2,"0")}`:toISO(raw);
     if(!d)continue;
-    const sess=parseInt(r[7]||0)||0;  // H = Sessions
+    const sess=parseInt(r[7]||0)||0;  // H = Sessions (coluna texto → parseInt)
+    const pv=parseInt(r[6]||0)||0;    // G = Page Views (coluna texto → parseInt)
     out[d]=(out[d]||0)+sess;
+    pvOut[d]=(pvOut[d]||0)+pv;
   }
   S.ga4SessByDate=out;
-  const tot=Object.values(out).reduce((a,b)=>a+b,0);
-  console.log(`[TMB] GA4 (Páginas): ${Object.keys(out).length} dias · ${tot} sessões (Ads·Meta·v1/v2/v3)`);
+  S.ga4PVByDate=pvOut;
+  const totS=Object.values(out).reduce((a,b)=>a+b,0);
+  const totPV=Object.values(pvOut).reduce((a,b)=>a+b,0);
+  console.log(`[TMB] GA4 (Páginas): ${Object.keys(out).length} dias · ${totS} sessões · ${totPV} page views (Ads·Meta·v1/v2/v3)`);
 }
 
 function applyChannel(ch){
@@ -1029,13 +1034,13 @@ async function loadData(force=false){
     }catch(e){ console.warn("[TMB] Base Meta - Sprint indisponível → Sprint vazio:",e.message); }
     S._sprintChan=buildSprint(sprintMetaRows,hsRows,mbRows,fichasRows);
     // ── Base GA4 (aba "Páginas"): sessões das LPs de versão, tráfego pago Meta. ──
-    S.ga4SessByDate={};
+    S.ga4SessByDate={}; S.ga4PVByDate={};
     try{
       if(S.dataSource==="sheets"){
         const gj=await fetchSheet(SHEET_CFG.tabs.ga4);
         buildGA4(gj);
       }
-    }catch(e){ console.warn("[TMB] Base GA4 indisponível → Páginas vazio:",e.message); S.ga4SessByDate={}; }
+    }catch(e){ console.warn("[TMB] Base GA4 indisponível → Páginas vazio:",e.message); S.ga4SessByDate={}; S.ga4PVByDate={}; }
     if(!S.channel)S.channel="consolidado";
     if(S.currentFunil==="sprint"&&S._sprintChan)applyChanObj(S._sprintChan.meta);
     else applyChannel(S.channel);
@@ -3254,11 +3259,12 @@ function renderPaginas(){
   const el=document.getElementById("page-paginas");if(!el)return;
   const start=S.startDate,end=S.endDate;
   const metaBD=(S._chan&&S._chan.meta&&S._chan.meta.byDate)||{};
-  let clicks=0,leads=0,sessions=0;
+  let clicks=0,leads=0,sessions=0,pageViews=0;
   for(const [d,v] of Object.entries(metaBD)){ if((!start||d>=start)&&(!end||d<=end)){ clicks+=(v.clicks||0); leads+=(v.metaLeads||0); } }
   for(const [d,s] of Object.entries(S.ga4SessByDate||{})){ if((!start||d>=start)&&(!end||d<=end)) sessions+=s; }
-  const connect=sessions>0?(clicks/sessions)*100:0;
-  const convPg =sessions>0?(leads/sessions)*100:0;
+  for(const [d,p] of Object.entries(S.ga4PVByDate||{})){ if((!start||d>=start)&&(!end||d<=end)) pageViews+=p; }
+  const connect=sessions>0?(clicks/sessions)*100:0;      // Cliques ÷ Sessions (GA4 col H)
+  const convPg =sessions>0?(leads/sessions)*100:0;       // Leads ÷ Sessions (GA4 col H)
   const nI=n=>Math.round(n||0).toLocaleString("pt-BR");
   const semGA4=!(S.ga4SessByDate&&Object.keys(S.ga4SessByDate).length);
   el.innerHTML=`
@@ -3277,9 +3283,9 @@ function renderPaginas(){
     <div class="cc" style="padding:16px 18px">
       <div class="section-lbl" style="margin-top:0">Como é calculado</div>
       <div style="font-size:12px;color:var(--muted);line-height:1.9">
-        <b style="color:var(--text)">Connect Rate</b> = Action Link Clicks (Base Meta) ÷ Sessions (GA4) × 100<br>
-        <b style="color:var(--text)">Conversão da Página</b> = Action Leads (Base Meta) ÷ Sessions (GA4) × 100<br>
-        <span style="color:var(--hint)">Sessões GA4: apenas linhas Ads · Meta · páginas de versão tmb-v1/v2/v3 e v1/v2/v3 (com ou sem barra final; exclui /homolog…/ e /v3-vsl/). Cliques e leads: só Base Meta (Perpétuo).</span>
+        <b style="color:var(--text)">Connect Rate</b> = Action Link Clicks (Base Meta) ÷ <b>Sessions</b> (GA4, col H) × 100<br>
+        <b style="color:var(--text)">Conversão da Página</b> = Action Leads (Base Meta) ÷ <b>Sessions</b> (GA4, col H) × 100<br>
+        <span style="color:var(--hint)">GA4: apenas linhas Ads · Meta · páginas de versão tmb-v1/v2/v3 e v1/v2/v3 (com ou sem barra final; exclui /homolog…/ e /v3-vsl/). Cliques e leads: só Base Meta (Perpétuo).</span>
       </div>
     </div>`;
 }
