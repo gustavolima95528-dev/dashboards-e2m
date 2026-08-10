@@ -42,8 +42,9 @@ html,body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-seri
 .htab:hover{color:var(--text)}
 .htab.htab-active{background:rgba(59,130,246,.16);color:#fff}
 
-/* Channel tabs (Consolidado / Meta / Google) */
-#chan-bar{display:flex;align-items:center;gap:6px;margin-bottom:16px}
+/* Channel tabs (Consolidado / Meta / Google) + filtro Temperatura */
+#chan-bar{display:block;margin-bottom:16px}
+.chan-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .chan-lbl{font-size:9px;font-weight:700;color:var(--hint);text-transform:uppercase;letter-spacing:.08em;margin-right:4px}
 .chan-tab{padding:6px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surf);cursor:pointer;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;color:var(--muted);transition:all .15s}
 .chan-tab:hover{border-color:var(--border-h);color:var(--text)}
@@ -576,17 +577,50 @@ function normPhone(p){let d=String(p||"").replace(/\D/g,"");while(d.length>11&&d
 const _sim=v=>/^sim/i.test(String(v||"").trim());   // "Sim..." → verdadeiro
 // Ganho (contrato assinado): coluna U "Nome Fase do Pipeline" traz ora o rótulo "Ganho", ora o ID "1235306854".
 const _isGanho=v=>{const s=String(v||"").trim();return s==="1235306854"||/^ganho$/i.test(s);};
+// Temperatura do lead: extraída da UTM medium (coluna O "utm_medium_last_hr" no HubSpot),
+// que carrega o nome da campanha (ex.: "perpetuo-lead-morno-search"). Detecta quente/morno/frio.
+const _tempOf=v=>{const m=String(v||"").toLowerCase().match(/quente|morno|frio/);return m?m[0]:"";};
+// Janela de desduplicação (dias): dois cadastros da MESMA pessoa contam como o mesmo
+// lead se estiverem a ≤14 dias um do outro (encadeado, a partir do cadastro anterior);
+// a ≥15 dias, o cadastro mais novo vira um NOVO lead.
+const DEDUP_WINDOW_DAYS=14;
+function _isoDays(a,b){   // (b - a) em dias, datas ISO "YYYY-MM-DD"
+  const pa=String(a).split("-"),pb=String(b).split("-");
+  const ua=Date.UTC(+pa[0],+pa[1]-1,+pa[2]),ub=Date.UTC(+pb[0],+pb[1]-1,+pb[2]);
+  return Math.round((ub-ua)/86400000);
+}
 // Unifica HubSpot + MetaBase + Fichas V2 num universo deduplicado (e-mail OU telefone).
 // Cada pessoa carrega 2 selos:
 //  • declared (infoprodutor) → "Vede Info?"(HS) / "Voce Vende Cursos..."(MB) / "Vende Info"(Fichas)
 //  • verified (info real)    → "Vende Info Real"(HS col Z) / "Venda Info Real"(Fichas)
 // isInfo = declared || verified (verificado sempre é infoprodutor) ⇒ info real ⊆ infoprodutor.
+// Quebra um grupo de identidade (registros da mesma pessoa) em sub-grupos pela
+// janela de 14 dias. Registros com data são ordenados; abre-se um novo sub-grupo
+// quando o intervalo para o cadastro ANTERIOR passa de DEDUP_WINDOW_DAYS. Registros
+// sem data (não dá para janelar) ficam anexados ao 1º sub-grupo (só completam
+// selos/UTM, sem virar lead extra).
+function _splitByWindow(records){
+  const dated=records.filter(r=>r.d).sort((a,b)=>a.d<b.d?-1:(a.d>b.d?1:0));
+  const undated=records.filter(r=>!r.d);
+  if(!dated.length)return [records];   // grupo inteiro sem data → 1 lead (sem data)
+  const subs=[]; let cur=[dated[0]], last=dated[0].d;
+  for(let i=1;i<dated.length;i++){
+    const r=dated[i];
+    if(_isoDays(last,r.d)>DEDUP_WINDOW_DAYS){subs.push(cur);cur=[r];}
+    else cur.push(r);
+    last=r.d;   // encadeado: a janela conta a partir do cadastro imediatamente anterior
+  }
+  subs.push(cur);
+  if(undated.length)subs[0]=subs[0].concat(undated);
+  return subs;
+}
 function dedupeLeads(hsRows,mbRows,fichasRows){
   fichasRows=fichasRows||[];
   const mapHS=r=>({src:"hs",
     email:normEmail(r["E-mail"]),phone:normPhone(r["Número de telefone"]),
     d:toISOLead(r["Data Criação Lead"]||r["Data/hora de criação do objeto"]||""),
     adId:trailId(r["utm_content_last_hr"]),campId:trailId(r["utm_medium_last_hr"]),
+    temp:_tempOf(r["utm_medium_last_hr"]),
     fat:(r["Qual foi seu faturamento no último ano?"]||r[" Qual foi seu faturamento no último ano?"]||"").trim(),
     area:(r["Qual área de atuação do seu projeto?"]||"").trim(),
     declared:_sim(r["Vede Info?"]), verified:_sim(r["Vende Info Real"]),
@@ -595,6 +629,7 @@ function dedupeLeads(hsRows,mbRows,fichasRows){
     email:normEmail(r["Email"]),phone:normPhone(r["Telefone"]),
     d:toISOLead(r["Data De Criacao Lp"]||r["Recebido Em"]||""),
     adId:trailId(r["Utm Content Last Hr"]),campId:trailId(r["Utm Medium Last Hr"]),
+    temp:_tempOf(r["Utm Medium Last Hr"]),
     fat:(r["Faixa De Faturamento Do Ultimo Ano"]||"").trim(),
     area:(r["Qual Area De Atuacao Do Seu Projeto"]||"").trim(),
     declared:_sim(r["Voce Vende Cursos Online E Ou Mentorias E Ou Imersoes"]), verified:false, won:false});
@@ -602,6 +637,7 @@ function dedupeLeads(hsRows,mbRows,fichasRows){
     email:normEmail(r["Pessoa - E-mail"]),phone:normPhone(r["Pessoa - Telefone"]),
     d:toISOLead(r["Data correta"]||r["data"]||""),
     adId:trailId(r["Negócio - UTM Content"]),campId:trailId(r["Negócio - UTM Medium"]),
+    temp:_tempOf(r["Negócio - UTM Medium"]),
     fat:(r["Negócio - Faturamento no último ano?"]||"").trim(),
     area:(r["Negócio - Área de Atuação no Projeto"]||"").trim(),
     declared:_sim(r["Vende Info"]), verified:_sim(r["Venda Info Real"]), won:false});
@@ -618,23 +654,29 @@ function dedupeLeads(hsRows,mbRows,fichasRows){
   recs.forEach((r,i)=>{const g=find(i);(groups[g]=groups[g]||[]).push(r);});
   const unified=[]; let nBoth=0,nHsOnly=0,nMbOnly=0,nInfo=0,nReal=0,nGanho=0;
   for(const key in groups){
-    const g=groups[key];
-    const hs=g.filter(r=>r.src==="hs"), mb=g.filter(r=>r.src==="mb");
-    if(hs.length&&mb.length)nBoth++; else if(hs.length)nHsOnly++; else if(mb.length)nMbOnly++;
-    const pool=hs.length?hs:(mb.length?mb:g);   // HubSpot manda; senão MetaBase; senão Fichas
-    let rep=pool[0];
-    for(const r of pool){if(r.d&&(!rep.d||r.d<rep.d))rep=r;}
-    rep={...rep};
-    if(!rep.d)for(const r of g){if(r.d){rep.d=r.d;break;}}                                  // completa data
-    if(!rep.adId&&!rep.campId)for(const r of g){if(r.adId||r.campId){rep.adId=r.adId;rep.campId=r.campId;break;}} // completa UTM
-    if(!rep.fat)for(const r of g){if(r.fat){rep.fat=r.fat;break;}}
-    if(!rep.area)for(const r of g){if(r.area){rep.area=r.area;break;}}
-    const verified=g.some(r=>r.verified);           // verificado pelo comercial em qualquer base
-    const isInfo=g.some(r=>r.declared)||verified;   // declarado OU verificado → infoprodutor
-    const isReal=verified;                          // info real = verificado
-    const isGanho=g.some(r=>r.won);                 // ganho = contrato assinado (fase HubSpot coluna U)
-    if(isInfo)nInfo++; if(isReal)nReal++; if(isGanho)nGanho++;
-    unified.push({d:rep.d,adId:rep.adId,campId:rep.campId,fat:rep.fat,area:rep.area,isInfo,isReal,isGanho});
+    // Janela de 14 dias: quebra o grupo de identidade (mesma pessoa) em SUB-grupos.
+    // Ordena os cadastros por data; abre um novo lead sempre que o intervalo para o
+    // cadastro anterior for > DEDUP_WINDOW_DAYS (encadeado). Assim, o mesmo e-mail/
+    // telefone que retorna depois de +14 dias volta a contar como lead novo.
+    for(const sub of _splitByWindow(groups[key])){
+      const hs=sub.filter(r=>r.src==="hs"), mb=sub.filter(r=>r.src==="mb");
+      if(hs.length&&mb.length)nBoth++; else if(hs.length)nHsOnly++; else if(mb.length)nMbOnly++;
+      const pool=hs.length?hs:(mb.length?mb:sub);   // HubSpot manda; senão MetaBase; senão Fichas
+      let rep=pool[0];
+      for(const r of pool){if(r.d&&(!rep.d||r.d<rep.d))rep=r;}
+      rep={...rep};
+      if(!rep.d)for(const r of sub){if(r.d){rep.d=r.d;break;}}                                  // completa data
+      if(!rep.adId&&!rep.campId)for(const r of sub){if(r.adId||r.campId){rep.adId=r.adId;rep.campId=r.campId;if(!rep.temp)rep.temp=r.temp;break;}} // completa UTM
+      if(!rep.temp)for(const r of sub){if(r.temp){rep.temp=r.temp;break;}}                       // completa temperatura
+      if(!rep.fat)for(const r of sub){if(r.fat){rep.fat=r.fat;break;}}
+      if(!rep.area)for(const r of sub){if(r.area){rep.area=r.area;break;}}
+      const verified=sub.some(r=>r.verified);           // verificado pelo comercial em qualquer base
+      const isInfo=sub.some(r=>r.declared)||verified;   // declarado OU verificado → infoprodutor
+      const isReal=verified;                            // info real = verificado
+      const isGanho=sub.some(r=>r.won);                 // ganho = contrato assinado (fase HubSpot coluna U)
+      if(isInfo)nInfo++; if(isReal)nReal++; if(isGanho)nGanho++;
+      unified.push({d:rep.d,adId:rep.adId,campId:rep.campId,temp:rep.temp||"",fat:rep.fat,area:rep.area,isInfo,isReal,isGanho});
+    }
   }
   S.leadDedup={total:unified.length,ambas:nBoth,soHubspot:nHsOnly,soMetabase:nMbOnly,linhasHS:hsRows.length,linhasMB:mbRows.length,linhasFic:fichasRows.length,infoprodutores:nInfo,reais:nReal,ganhos:nGanho};
   return unified;
@@ -776,8 +818,7 @@ function _ga4PageOk(p){
 }
 function buildGA4(json){
   const rows=(json&&json.values)||[];
-  const out={};    // sessões por dia (col H)
-  const pvOut={};  // page views por dia (col G) — usado no Connect Rate
+  const out={};
   for(let i=1;i<rows.length;i++){
     const r=rows[i]; if(!r)continue;
     const src=(r[8]||"").trim();   // I = Fonte (Ads/Orgânico)
@@ -789,20 +830,44 @@ function buildGA4(json){
     const mm=raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
     const d=mm?`${mm[1]}-${mm[2].padStart(2,"0")}-${mm[3].padStart(2,"0")}`:toISO(raw);
     if(!d)continue;
-    const sess=parseInt(r[7]||0)||0;  // H = Sessions (coluna texto → parseInt)
-    const pv=parseInt(r[6]||0)||0;    // G = Page Views (coluna texto → parseInt)
+    const sess=parseInt(r[7]||0)||0;  // H = Sessions
     out[d]=(out[d]||0)+sess;
-    pvOut[d]=(pvOut[d]||0)+pv;
   }
   S.ga4SessByDate=out;
-  S.ga4PVByDate=pvOut;
-  const totS=Object.values(out).reduce((a,b)=>a+b,0);
-  const totPV=Object.values(pvOut).reduce((a,b)=>a+b,0);
-  console.log(`[TMB] GA4 (Páginas): ${Object.keys(out).length} dias · ${totS} sessões · ${totPV} page views (Ads·Meta·v1/v2/v3)`);
+  const tot=Object.values(out).reduce((a,b)=>a+b,0);
+  console.log(`[TMB] GA4 (Páginas): ${Object.keys(out).length} dias · ${tot} sessões (Ads·Meta·v1/v2/v3)`);
 }
 
+// Rebuild dos canais do Perpétuo respeitando o filtro de Temperatura.
+// tempFilter="all" → usa S._chan (base completa). Caso contrário, refiltra as
+// linhas cruas (campanhas Meta/Google pelo NOME; leads HubSpot/MetaBase/Fichas
+// pela UTM medium) e reconstrói os 3 canais, cacheando por temperatura.
+function _rowsForTemp(){
+  const rr=S._rawRows||{}; const tf=S.tempFilter||"all";
+  if(tf==="all")return rr;
+  const byCamp=(rows,k)=>(rows||[]).filter(r=>_tempOf(r[k])===tf);
+  return {
+    metaRows:byCamp(rr.metaRows,"Campaign Name"),
+    googRows:byCamp(rr.googRows,"Campaign Name"),
+    hsRows:byCamp(rr.hsRows,"utm_medium_last_hr"),
+    mbRows:byCamp(rr.mbRows,"Utm Medium Last Hr"),
+    fichasRows:byCamp(rr.fichasRows,"Negócio - UTM Medium"),
+  };
+}
+function chanForTemp(){
+  const tf=S.tempFilter||"all";
+  if(tf==="all"||!S._rawRows)return S._chan;
+  S._chanTempCache=S._chanTempCache||{};
+  if(!S._chanTempCache[tf]){
+    const rr=_rowsForTemp(), _saved=S.leadDedup;
+    S._chanTempCache[tf]=buildPerpetuo(rr.metaRows,rr.googRows,rr.hsRows,rr.mbRows,rr.fichasRows);
+    S.leadDedup=_saved;   // preserva os números globais do Perpétuo (dedup do topo)
+  }
+  return S._chanTempCache[tf];
+}
 function applyChannel(ch){
-  const c=S._chan&&S._chan[ch];if(!c)return;
+  const src=chanForTemp();
+  const c=src&&src[ch];if(!c)return;
   applyChanObj(c);
 }
 // Copia um objeto de canal (byDate/leadsD/...) para o estado ativo. Usado pelo
@@ -825,12 +890,25 @@ function setChannel(ch){
   S.campSearch="";S.adSearch="";
   render();
 }
+// Filtro de Temperatura (Todos/Quente/Morno/Frio) — segmenta o funil Perpétuo
+// pela nomenclatura da UTM medium / nome de campanha. Reconstrói o canal ativo.
+function setTemp(tf){
+  S.tempFilter=tf;
+  S.selectedCamps=new Set();S.selectedAds=new Set();
+  S.campSearch="";S.adSearch="";
+  applyChannel(S.channel||"consolidado");
+  render();
+}
 function renderChannelBar(){
   const el=document.getElementById("chan-bar");if(!el)return;
   if(S.currentFunil!=="perpetuo"||S.currentPage==="paginas"||S.loading||S.error||S.firstLoad){el.style.display="none";return;}
   el.style.display="block";
   const chans=[{id:"consolidado",lbl:"◉ Consolidado"},{id:"meta",lbl:"Meta"},{id:"google",lbl:"Google"}];
-  el.innerHTML=`<span class="chan-lbl">Tráfego:</span>`+chans.map(c=>`<button class="chan-tab${S.channel===c.id?" on":""}" onclick="setChannel('${c.id}')">${c.lbl}</button>`).join("");
+  const temps=[{id:"all",lbl:"Todos"},{id:"quente",lbl:"Quente"},{id:"morno",lbl:"Morno"},{id:"frio",lbl:"Frio"}];
+  const tf=S.tempFilter||"all";
+  el.innerHTML=
+    `<div class="chan-row"><span class="chan-lbl">Tráfego:</span>`+chans.map(c=>`<button class="chan-tab${S.channel===c.id?" on":""}" onclick="setChannel('${c.id}')">${c.lbl}</button>`).join("")+`</div>`+
+    `<div class="chan-row" style="margin-top:8px"><span class="chan-lbl">Temperatura:</span>`+temps.map(t=>`<button class="chan-tab${tf===t.id?" on":""}" onclick="setTemp('${t.id}')">${t.lbl}</button>`).join("")+`</div>`;
 }
 
 // ── Leitura ao vivo do Google Sheets (gviz) ───────────────────────────────
@@ -1020,6 +1098,9 @@ async function loadData(force=false){
     }catch(e){ console.warn("[TMB] Fichas V2 indisponível → info real parcial:",e.message); fichasRows=[]; }
     console.log("[TMB] Meta:",metaRows.length,"| Google:",googRows.length,"| HubSpot:",hsRows.length,"| MetaBase:",mbRows.length,"| Fichas V2:",fichasRows.length);
     S._chan=buildPerpetuo(metaRows,googRows,hsRows,mbRows,fichasRows);
+    S._rawRows={metaRows,googRows,hsRows,mbRows,fichasRows};   // p/ o filtro de Temperatura reconstruir
+    S._chanTempCache={};                                       // limpa cache de temperatura a cada carga
+    if(!S.tempFilter)S.tempFilter="all";
     if(S.leadDedup)console.log("[TMB] Leads únicos:",S.leadDedup.total,"| infoprodutores:",S.leadDedup.infoprodutores,"| info real:",S.leadDedup.reais);
     // ── Funil Sprint: gasto/anúncios vêm da aba "Base Meta - Sprint"; leads
     //    cruzados da HubSpot via UTM. Best-effort — se a aba faltar, Sprint fica vazio. ──
@@ -1034,13 +1115,13 @@ async function loadData(force=false){
     }catch(e){ console.warn("[TMB] Base Meta - Sprint indisponível → Sprint vazio:",e.message); }
     S._sprintChan=buildSprint(sprintMetaRows,hsRows,mbRows,fichasRows);
     // ── Base GA4 (aba "Páginas"): sessões das LPs de versão, tráfego pago Meta. ──
-    S.ga4SessByDate={}; S.ga4PVByDate={};
+    S.ga4SessByDate={};
     try{
       if(S.dataSource==="sheets"){
         const gj=await fetchSheet(SHEET_CFG.tabs.ga4);
         buildGA4(gj);
       }
-    }catch(e){ console.warn("[TMB] Base GA4 indisponível → Páginas vazio:",e.message); S.ga4SessByDate={}; S.ga4PVByDate={}; }
+    }catch(e){ console.warn("[TMB] Base GA4 indisponível → Páginas vazio:",e.message); S.ga4SessByDate={}; }
     if(!S.channel)S.channel="consolidado";
     if(S.currentFunil==="sprint"&&S._sprintChan)applyChanObj(S._sprintChan.meta);
     else applyChannel(S.channel);
@@ -1791,7 +1872,7 @@ function renderPrincipal(){
     <div class="hdr" style="margin-bottom:6px">
       <div>
         <div class="hdr-title">TMB</div>
-        <div class="hdr-sub">atualizado em: ${S.updated||"—"}${daily.length>0?` · ${daily.length} dias`:""}</div>
+        <div class="hdr-sub">atualizado em: ${S.updated||"—"}${daily.length>0?` · ${daily.length} dias`:""}${(S.tempFilter&&S.tempFilter!=="all")?` · temperatura: ${S.tempFilter}`:""}</div>
       </div>
       <div style="display:flex;align-items:center;gap:16px">${statusLegend()}</div>
     </div>
@@ -3259,12 +3340,11 @@ function renderPaginas(){
   const el=document.getElementById("page-paginas");if(!el)return;
   const start=S.startDate,end=S.endDate;
   const metaBD=(S._chan&&S._chan.meta&&S._chan.meta.byDate)||{};
-  let clicks=0,leads=0,sessions=0,pageViews=0;
+  let clicks=0,leads=0,sessions=0;
   for(const [d,v] of Object.entries(metaBD)){ if((!start||d>=start)&&(!end||d<=end)){ clicks+=(v.clicks||0); leads+=(v.metaLeads||0); } }
   for(const [d,s] of Object.entries(S.ga4SessByDate||{})){ if((!start||d>=start)&&(!end||d<=end)) sessions+=s; }
-  for(const [d,p] of Object.entries(S.ga4PVByDate||{})){ if((!start||d>=start)&&(!end||d<=end)) pageViews+=p; }
-  const connect=sessions>0?(clicks/sessions)*100:0;      // Cliques ÷ Sessions (GA4 col H)
-  const convPg =sessions>0?(leads/sessions)*100:0;       // Leads ÷ Sessions (GA4 col H)
+  const connect=sessions>0?(clicks/sessions)*100:0;
+  const convPg =sessions>0?(leads/sessions)*100:0;
   const nI=n=>Math.round(n||0).toLocaleString("pt-BR");
   const semGA4=!(S.ga4SessByDate&&Object.keys(S.ga4SessByDate).length);
   el.innerHTML=`
@@ -3283,9 +3363,9 @@ function renderPaginas(){
     <div class="cc" style="padding:16px 18px">
       <div class="section-lbl" style="margin-top:0">Como é calculado</div>
       <div style="font-size:12px;color:var(--muted);line-height:1.9">
-        <b style="color:var(--text)">Connect Rate</b> = Action Link Clicks (Base Meta) ÷ <b>Sessions</b> (GA4, col H) × 100<br>
-        <b style="color:var(--text)">Conversão da Página</b> = Action Leads (Base Meta) ÷ <b>Sessions</b> (GA4, col H) × 100<br>
-        <span style="color:var(--hint)">GA4: apenas linhas Ads · Meta · páginas de versão tmb-v1/v2/v3 e v1/v2/v3 (com ou sem barra final; exclui /homolog…/ e /v3-vsl/). Cliques e leads: só Base Meta (Perpétuo).</span>
+        <b style="color:var(--text)">Connect Rate</b> = Action Link Clicks (Base Meta) ÷ Sessions (GA4) × 100<br>
+        <b style="color:var(--text)">Conversão da Página</b> = Action Leads (Base Meta) ÷ Sessions (GA4) × 100<br>
+        <span style="color:var(--hint)">Sessões GA4: apenas linhas Ads · Meta · páginas de versão tmb-v1/v2/v3 e v1/v2/v3 (com ou sem barra final; exclui /homolog…/ e /v3-vsl/). Cliques e leads: só Base Meta (Perpétuo).</span>
       </div>
     </div>`;
 }
