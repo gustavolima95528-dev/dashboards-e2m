@@ -577,9 +577,30 @@ function normPhone(p){let d=String(p||"").replace(/\D/g,"");while(d.length>11&&d
 const _sim=v=>/^sim/i.test(String(v||"").trim());   // "Sim..." → verdadeiro
 // Ganho (contrato assinado): coluna U "Nome Fase do Pipeline" traz ora o rótulo "Ganho", ora o ID "1235306854".
 const _isGanho=v=>{const s=String(v||"").trim();return s==="1235306854"||/^ganho$/i.test(s);};
-// Temperatura do lead: extraída da UTM medium (coluna O "utm_medium_last_hr" no HubSpot),
-// que carrega o nome da campanha (ex.: "perpetuo-lead-morno-search"). Detecta quente/morno/frio.
+// Temperatura por NOME: acha quente/morno/frio numa string (nome de campanha ou UTM medium).
 const _tempOf=v=>{const m=String(v||"").toLowerCase().match(/quente|morno|frio/);return m?m[0]:"";};
+// Mapa Campaign ID → temperatura, montado pelo NOME das campanhas (Base Meta + Base Google).
+// Necessário porque no HubSpot o utm_medium_last_hr (coluna O) dos leads do GOOGLE é só o
+// ID numérico da campanha (o nome, que carrega quente/morno/frio, só existe na Base Google).
+// No Meta o utm_medium já traz o nome — mas o mapa cobre os dois canais igual.
+function buildTempByCampId(){
+  const map={};
+  for(const rows of arguments)for(const r of (rows||[])){
+    const id=String(r["Campaign ID"]||"").trim();
+    if(!id||map[id])continue;
+    const t=_tempOf(r["Campaign Name"]);
+    if(t)map[id]=t;
+  }
+  return map;
+}
+// Temperatura de um lead a partir do utm_medium: 1º tenta pelo texto (Meta, nome completo);
+// se não achar, resolve pelo ID numérico da campanha via S._tempByCampId (Google e Meta).
+function _tempLead(medium){
+  const direct=_tempOf(medium);
+  if(direct)return direct;
+  const id=trailId(medium);
+  return (id&&S._tempByCampId&&S._tempByCampId[id])||"";
+}
 // Janela de desduplicação (dias): dois cadastros da MESMA pessoa contam como o mesmo
 // lead se estiverem a ≤14 dias um do outro (encadeado, a partir do cadastro anterior);
 // a ≥15 dias, o cadastro mais novo vira um NOVO lead.
@@ -620,7 +641,7 @@ function dedupeLeads(hsRows,mbRows,fichasRows){
     email:normEmail(r["E-mail"]),phone:normPhone(r["Número de telefone"]),
     d:toISOLead(r["Data Criação Lead"]||r["Data/hora de criação do objeto"]||""),
     adId:trailId(r["utm_content_last_hr"]),campId:trailId(r["utm_medium_last_hr"]),
-    temp:_tempOf(r["utm_medium_last_hr"]),
+    temp:_tempLead(r["utm_medium_last_hr"]),
     fat:(r["Qual foi seu faturamento no último ano?"]||r[" Qual foi seu faturamento no último ano?"]||"").trim(),
     area:(r["Qual área de atuação do seu projeto?"]||"").trim(),
     declared:_sim(r["Vede Info?"]), verified:_sim(r["Vende Info Real"]),
@@ -629,7 +650,7 @@ function dedupeLeads(hsRows,mbRows,fichasRows){
     email:normEmail(r["Email"]),phone:normPhone(r["Telefone"]),
     d:toISOLead(r["Data De Criacao Lp"]||r["Recebido Em"]||""),
     adId:trailId(r["Utm Content Last Hr"]),campId:trailId(r["Utm Medium Last Hr"]),
-    temp:_tempOf(r["Utm Medium Last Hr"]),
+    temp:_tempLead(r["Utm Medium Last Hr"]),
     fat:(r["Faixa De Faturamento Do Ultimo Ano"]||"").trim(),
     area:(r["Qual Area De Atuacao Do Seu Projeto"]||"").trim(),
     declared:_sim(r["Voce Vende Cursos Online E Ou Mentorias E Ou Imersoes"]), verified:false, won:false});
@@ -637,7 +658,7 @@ function dedupeLeads(hsRows,mbRows,fichasRows){
     email:normEmail(r["Pessoa - E-mail"]),phone:normPhone(r["Pessoa - Telefone"]),
     d:toISOLead(r["Data correta"]||r["data"]||""),
     adId:trailId(r["Negócio - UTM Content"]),campId:trailId(r["Negócio - UTM Medium"]),
-    temp:_tempOf(r["Negócio - UTM Medium"]),
+    temp:_tempLead(r["Negócio - UTM Medium"]),
     fat:(r["Negócio - Faturamento no último ano?"]||"").trim(),
     area:(r["Negócio - Área de Atuação no Projeto"]||"").trim(),
     declared:_sim(r["Vende Info"]), verified:_sim(r["Venda Info Real"]), won:false});
@@ -845,13 +866,16 @@ function buildGA4(json){
 function _rowsForTemp(){
   const rr=S._rawRows||{}; const tf=S.tempFilter||"all";
   if(tf==="all")return rr;
-  const byCamp=(rows,k)=>(rows||[]).filter(r=>_tempOf(r[k])===tf);
+  // Gasto: pelo NOME da campanha (Meta e Google trazem quente/morno/frio no nome).
+  const byName=(rows,k)=>(rows||[]).filter(r=>_tempOf(r[k])===tf);
+  // Leads: pelo utm_medium — nome (Meta) OU ID numérico resolvido no mapa (Google).
+  const byLead=(rows,k)=>(rows||[]).filter(r=>_tempLead(r[k])===tf);
   return {
-    metaRows:byCamp(rr.metaRows,"Campaign Name"),
-    googRows:byCamp(rr.googRows,"Campaign Name"),
-    hsRows:byCamp(rr.hsRows,"utm_medium_last_hr"),
-    mbRows:byCamp(rr.mbRows,"Utm Medium Last Hr"),
-    fichasRows:byCamp(rr.fichasRows,"Negócio - UTM Medium"),
+    metaRows:byName(rr.metaRows,"Campaign Name"),
+    googRows:byName(rr.googRows,"Campaign Name"),
+    hsRows:byLead(rr.hsRows,"utm_medium_last_hr"),
+    mbRows:byLead(rr.mbRows,"Utm Medium Last Hr"),
+    fichasRows:byLead(rr.fichasRows,"Negócio - UTM Medium"),
   };
 }
 function chanForTemp(){
@@ -1097,6 +1121,7 @@ async function loadData(force=false){
       }
     }catch(e){ console.warn("[TMB] Fichas V2 indisponível → info real parcial:",e.message); fichasRows=[]; }
     console.log("[TMB] Meta:",metaRows.length,"| Google:",googRows.length,"| HubSpot:",hsRows.length,"| MetaBase:",mbRows.length,"| Fichas V2:",fichasRows.length);
+    S._tempByCampId=buildTempByCampId(metaRows,googRows);   // Campaign ID → temperatura (p/ leads do Google)
     S._chan=buildPerpetuo(metaRows,googRows,hsRows,mbRows,fichasRows);
     S._rawRows={metaRows,googRows,hsRows,mbRows,fichasRows};   // p/ o filtro de Temperatura reconstruir
     S._chanTempCache={};                                       // limpa cache de temperatura a cada carga
