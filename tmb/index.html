@@ -3264,12 +3264,20 @@ function planVendasDia(invest){ return Math.round(invest/PLAN_CPL); }
 
 function getPlanDaily(){
   const today=todayISO();
+  // REALIZADO do Planejamento = gasto TOTAL do mês (independe do canal ativo):
+  //   Consolidado (Meta + Google, Perpétuo) + Sprint (aba "Base Meta - Sprint").
+  //   O plano de R$ 95.000 engloba o investimento na Sprint, então o realizado
+  //   também soma a Sprint. Leads realizados somam Perpétuo + Sprint pelo mesmo motivo.
+  const consBD =(S._chan&&S._chan.consolidado&&S._chan.consolidado.byDate)||{};
+  const consLD =(S._chan&&S._chan.consolidado&&S._chan.consolidado.leadsD)||{};
+  const sprBD  =(S._sprintChan&&S._sprintChan.meta&&S._sprintChan.meta.byDate)||{};
+  const sprLD  =(S._sprintChan&&S._sprintChan.meta&&S._sprintChan.meta.leadsD)||{};
   return Object.keys(PLAN_INVEST).sort().map(date=>{
     const planInv=PLAN_INVEST[date];
     const planVen=planVendasDia(planInv);
-    const hasReal=date<=today && !!S.meta[date];
-    const realInv=hasReal?(S.meta[date].spend||0):null;
-    const realVen=hasReal?((S.leadsD[date]&&S.leadsD[date].traffic)||0):null;
+    const hasReal=date<=today && (!!consBD[date] || !!sprBD[date]);
+    const realInv=hasReal?(((consBD[date]&&consBD[date].spend)||0)+((sprBD[date]&&sprBD[date].spend)||0)):null;
+    const realVen=hasReal?(((consLD[date]&&consLD[date].traffic)||0)+((sprLD[date]&&sprLD[date].traffic)||0)):null;
     return{date,label:fDate(date),planInv,planVen,realInv,realVen,
       isFuture:date>today,isToday:date===today,hasReal};
   });
