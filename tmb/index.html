@@ -334,6 +334,21 @@ const METAS_T = {
   txConvForm:   {val:25,   higher:true},    // Tx conv formulário (Meta: 25%)
 };
 
+// Metas do funil Sprint — média ponderada (por volume) da Sprint de Julho/2026.
+// Base anexa: campanhas sprint_jul26-lead-frio-LL1pct + sprint_jul26-lead-quente.
+// Agregados: gasto R$ 4.705,79 · leads 388 · impr 147.181 · cliques 1.408 · LP views 1.201.
+// CPL=gasto/leads · CPC=gasto/cliques · CTR=cliques/impr · CPM=gasto/impr ·
+// Connect=LPviews/cliques · Conv.Pg=leads/LPviews.
+// Usada SÓ na aba "Métricas tráfego" do Sprint (não entra no Resumo nem nas metas de Anúncios).
+const METAS_SPRINT = {
+  cpl:      {val:12.13, higher:false},
+  cpc:      {val:3.34,  higher:false},
+  ctr:      {val:0.96,  higher:true},
+  cpm:      {val:31.97, higher:false},
+  connect:  {val:85.30, higher:true},
+  txConvPg: {val:32.31, higher:true},
+};
+
 // Metas do funil Seguidores (distribuição) — usadas no Resumo Seguidores
 const METAS_SEG = {
   custoVisita: {val:0.48,  higher:false},   // Custo por visita ao perfil
@@ -1000,7 +1015,7 @@ function hasCol(rows,col){ return rows.length>0 && Object.prototype.hasOwnProper
 // ignorados). Assim investimento e todas as métricas do resumo Seguidores
 // refletem apenas as campanhas de distribuição.
 function buildSeguidores(rows){
-  const norm=s=>(s||"").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  const norm=s=>(s||"").toString().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"");
   const dMeta={}, dByAd={}, dByAdByDate={}, dByCamp={}, dByCampByDate={};
   const dSeg={}, dSegByAd={}, dSegByCamp={};
   let kept=0, skipped=0;
@@ -2056,14 +2071,16 @@ function renderTrafego(){
   const p3Tot=getTotalsT(p3Daily);
   const daily=getDailyT(S.startDate,S.endDate);
 
+  // Sprint usa as metas da média ponderada de Julho (METAS_SPRINT); demais funis usam METAS_T.
+  const MT = S.currentFunil==="sprint" ? METAS_SPRINT : METAS_T;
   const METRICS=[
     {key:"spend",    lbl:"Investimento",       fmt:fBRL,  meta:null,              higher:null},
-    {key:"cpl",      lbl:"Custo por Lead",      fmt:fBRL,  meta:METAS_T.cpl.val,  higher:false},
-    {key:"cpc",      lbl:"CPC",                 fmt:fBRL,  meta:METAS_T.cpc.val,  higher:false},
-    {key:"ctr",      lbl:"CTR",                 fmt:fPct,  meta:METAS_T.ctr.val,  higher:true},
-    {key:"cpm",      lbl:"CPM",                 fmt:fBRL,  meta:METAS_T.cpm.val,  higher:false},
-    {key:"connect",  lbl:"Connect Rate",        fmt:fPct,  meta:METAS_T.connect.val,  higher:true},
-    {key:"txConvPg", lbl:"Conv. Pg. Cadastro",  fmt:fPct,  meta:METAS_T.txConvPg.val, higher:true},
+    {key:"cpl",      lbl:"Custo por Lead",      fmt:fBRL,  meta:MT.cpl.val,  higher:false},
+    {key:"cpc",      lbl:"CPC",                 fmt:fBRL,  meta:MT.cpc.val,  higher:false},
+    {key:"ctr",      lbl:"CTR",                 fmt:fPct,  meta:MT.ctr.val,  higher:true},
+    {key:"cpm",      lbl:"CPM",                 fmt:fBRL,  meta:MT.cpm.val,  higher:false},
+    {key:"connect",  lbl:"Connect Rate",        fmt:fPct,  meta:MT.connect.val,  higher:true},
+    {key:"txConvPg", lbl:"Conv. Pg. Cadastro",  fmt:fPct,  meta:MT.txConvPg.val, higher:true},
   ];
 
   function metricsRow(dataObj){
@@ -2087,11 +2104,11 @@ function renderTrafego(){
   }
 
   const CHART_CONFIGS=[
-    {key:"ctr",     lbl:"CTR",                 fmt:fPct, meta:METAS_T.ctr.val,     metaLbl:`Meta ${METAS_T.ctr.val}%`},
-    {key:"cpm",     lbl:"CPM",                 fmt:fBRL, meta:METAS_T.cpm.val,     metaLbl:`Meta R$${METAS_T.cpm.val}`},
-    {key:"cpc",     lbl:"CPC",                 fmt:fBRL, meta:METAS_T.cpc.val,     metaLbl:`Meta R$${METAS_T.cpc.val}`},
-    {key:"txConvPg",lbl:"Conv. Pg. Cadastro",  fmt:fPct, meta:METAS_T.txConvPg.val,metaLbl:`Meta ${METAS_T.txConvPg.val}%`},
-    {key:"connect", lbl:"Connect Rate",        fmt:fPct, meta:METAS_T.connect.val, metaLbl:`Meta ${METAS_T.connect.val}%`},
+    {key:"ctr",     lbl:"CTR",                 fmt:fPct, meta:MT.ctr.val,     metaLbl:`Meta ${MT.ctr.val}%`},
+    {key:"cpm",     lbl:"CPM",                 fmt:fBRL, meta:MT.cpm.val,     metaLbl:`Meta R$${MT.cpm.val}`},
+    {key:"cpc",     lbl:"CPC",                 fmt:fBRL, meta:MT.cpc.val,     metaLbl:`Meta R$${MT.cpc.val}`},
+    {key:"txConvPg",lbl:"Conv. Pg. Cadastro",  fmt:fPct, meta:MT.txConvPg.val,metaLbl:`Meta ${MT.txConvPg.val}%`},
+    {key:"connect", lbl:"Connect Rate",        fmt:fPct, meta:MT.connect.val, metaLbl:`Meta ${MT.connect.val}%`},
   ];
 
   function tChart(c){
