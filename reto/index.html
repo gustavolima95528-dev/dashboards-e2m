@@ -320,8 +320,24 @@ const SHEET_META = "Base Meta";
 const SHEET_DIST = "Base Distribuição";
 const SHEET_SEG  = "Base Seguidores Antiga";
 // Seguidores Nova foi dividida em duas abas por moeda — somamos as duas (ver accSegNova)
-const SHEET_SEG_NOVA_MXN = "Base Seguidores Nova (MXN)"; // valores em pesos → convertidos p/ USD (÷18)
+const SHEET_SEG_NOVA_MXN = "Base Seguidores Nova (MXN)"; // valores em pesos → convertidos p/ USD
 const SHEET_SEG_NOVA_USD = "Base Seguidores Nova (USD)"; // valores já em USD
+// Taxa de conversão MXN→USD (cotação aproximada — ajuste aqui se a cotação mudar bastante)
+const MXN_USD_RATE = 17;
+// Detecta a moeda de uma conta de anúncios pelo NOME da conta, em vez de casar string exata
+// (nomes como "CA01 - Lançamentos (MXN)" ou "CA03 - RETO (USD)" já dizem a moeda explicitamente).
+// Contas sem indicação de moeda no nome caem no mapeamento manual conhecido (fallback).
+const KNOWN_MXN_ACCOUNTS = ["Conta 2 cartão"]; // contas sem "(MXN)" no nome mas que sabemos ser em pesos
+const KNOWN_USD_ACCOUNTS = []; // contas sem "(USD)" no nome mas que sabemos ser em dólar
+function accountSpendToUSD(accountName, rawSpend){
+  const acc=(accountName||"").trim();
+  if(/\(\s*usd\s*\)/i.test(acc)) return rawSpend;                 // "(USD)" explícito no nome
+  if(/\(\s*mxn?\s*\)|\(\s*mx\s*\)/i.test(acc)) return rawSpend/MXN_USD_RATE; // "(MXN)"/"(MX)" explícito no nome
+  if(KNOWN_MXN_ACCOUNTS.includes(acc)) return rawSpend/MXN_USD_RATE;
+  if(KNOWN_USD_ACCOUNTS.includes(acc)) return rawSpend;
+  return rawSpend; // padrão: assume USD quando não há nenhuma pista de moeda
+}
+const MXN_USD_RATE_SEG_NOVA = MXN_USD_RATE; // mantido por compatibilidade — mesma taxa usada em todo o dash
 // "Base Aquecimento Morno" não é mais usada — a aba "Novo" já traz spend/impressões/vídeo/seguidores tudo junto
 const SHEET_AQUEC_SEG = "Base Aquecimento Seguidores Novo";
 const SHEET_RETO = "Vendas Hotmart - Reto";
@@ -561,6 +577,28 @@ function subDays(iso,n){ return addDays(iso,-n); }
 function parseBRL(s){ if(!s||s==="-"||s==="0")return 0;return parseFloat(String(s).replace(/R\$\s*/g,"").replace(/\./g,"").replace(",",".").trim())||0; }
 function parseBRLAbs(s){ return Math.abs(parseBRL(s)); }
 function parseUSD(s){ if(!s||s==="-"||s==="0")return 0;return parseFloat(String(s).replace(/[$\s,]/g,"").trim())||0; }
+// Parser flexível: detecta automaticamente se "," ou "." é o separador decimal,
+// tratando o outro como separador de milhar. Funciona tanto com "1.234,56" (BR/MX)
+// quanto com "1,234.56" ou "764.26" (formato cru da planilha) sem quebrar nenhum dos dois.
+function parseNumFlex(s){
+  if(s===undefined||s===null) return 0;
+  let str=String(s).trim();
+  if(!str||str==="-") return 0;
+  str=str.replace(/[^0-9,.\-]/g,""); // remove símbolos de moeda (R$, $, etc.) e espaços
+  const lastComma=str.lastIndexOf(",");
+  const lastDot=str.lastIndexOf(".");
+  if(lastComma>lastDot){
+    str=str.replace(/\./g,"").replace(",",".");
+  } else if(lastDot>lastComma){
+    str=str.replace(/,/g,"");
+  }
+  return parseFloat(str)||0;
+}
+// Lê a primeira coluna existente/preenchida dentre várias variações de nome possíveis
+function pickCol(r, ...keys){
+  for(const k of keys){ if(r[k]!==undefined && r[k]!=="") return r[k]; }
+  return "0";
+}
 
 // Normaliza status numérico da Eduzz para texto
 function normalizeStatus(s){
@@ -725,7 +763,7 @@ function normalizeHotmartStatus(s){
 
 // Conversão para USD — rates = quanto da moeda vale 1 USD
 const FX_RATES={
-  USD:1, MXN:18, BRL:5.50, EUR:0.92, GBP:0.79, CAD:1.37,
+  USD:1, MXN:MXN_USD_RATE, BRL:5.50, EUR:0.92, GBP:0.79, CAD:1.37,
   ARS:1000, COP:4100, CLP:960, PEN:3.75, CRC:530, GTQ:7.8,
   HNL:25, NIO:36.5, DOP:60, BOB:6.9, PYG:7700, UYU:41,
 };
@@ -742,12 +780,12 @@ function hotmartPriceUSD(priceRaw, currency, productName){
   const price=parseFloat(String(priceRaw).replace(",","."))||0;
   const curr=(currency||"USD").toUpperCase().trim();
   if(/reto/i.test(productName)){
-    if(curr==="MXN") return price/18;
+    if(curr==="MXN") return price/MXN_USD_RATE;
     if(curr==="USD") return price;
     return 38; // outras moedas: preço padrão Reto = $38
   }
   if(/mapa/i.test(productName)){
-    if(curr==="MXN") return price/18;
+    if(curr==="MXN") return price/MXN_USD_RATE;
     if(curr==="USD") return price;
     return 297; // outras moedas: preço padrão Mapa = $297
   }
@@ -895,7 +933,7 @@ async function loadData(force=false){
       if(!mD[d])mD[d]={spend:0,clicks:0,impressions:0,landingViews:0,checkouts:0,purchases:0};
       const _accMeta=(r["Account Name"]||r["Account name"]||r[""]||"").trim();
       const _rawSpendMeta=parseBRL(r["Spend (Cost, Amount Spent)"]);
-      const _spendMeta=_accMeta==="Conta 2 cartão"?_rawSpendMeta/18:_rawSpendMeta;
+      const _spendMeta=accountSpendToUSD(_accMeta,_rawSpendMeta);
       mD[d].spend        += _spendMeta;
       mD[d].clicks       += parseInt(r["Action Link Clicks"]||0)||0;
       mD[d].impressions  += parseInt(r["Impressions"]||0)||0;
@@ -1117,8 +1155,12 @@ async function loadData(force=false){
       const d=r["Date"]||""; if(!d||d==="Date")continue;
       const _acc=(r["Account Name"]||"").trim();
       const _rawSpend=parseBRL(r["Spend (Cost, Amount Spent)"]);
-      // CA03 (ou "CA 03") = USD; demais = Peso Mexicano, divide por 18
-      const spendV=(_acc==="CA03"||_acc==="CA 03")?_rawSpend:_rawSpend/18;
+      // Detecta moeda pelo nome da conta quando explícito ("(USD)"/"(MXN)"); senão usa o
+      // fallback original: CA03/"CA 03" = USD, qualquer outra conta = Peso Mexicano.
+      const spendV = /\(\s*usd\s*\)/i.test(_acc) ? _rawSpend
+        : /\(\s*mxn?\s*\)|\(\s*mx\s*\)/i.test(_acc) ? _rawSpend/MXN_USD_RATE
+        : (_acc==="CA03"||_acc==="CA 03") ? _rawSpend
+        : _rawSpend/MXN_USD_RATE;
       const clicksV   =parseInt(r["Action Link Clicks"]||0)||0;
       const impressV  =parseInt(r["Impressions"]||0)||0;
       const video3sV  =parseInt(r["Action 3s Video Views"]||0)||0;
@@ -1194,10 +1236,12 @@ async function loadData(force=false){
         } else { d=dRaw; }
         if(!d)continue;
         // Métricas de spend/tráfego
+        // Tolera tanto "Valor usado" quanto "Valor gasto" como nome da coluna de gasto,
+        // e usa parser flexível (aceita "1.234,56" e "764.26" sem quebrar nenhum dos dois)
         const spendRaw = isUSD
-          ? (parseFloat((r["Valor gasto (USD)"]||"0").replace(",","."))||0)
-          : (parseFloat((r["Valor usado (MXN)"]||"0").replace(",","."))||0);
-        const spendUSD = isUSD ? spendRaw : spendRaw/18;
+          ? parseNumFlex(pickCol(r, "Valor gasto (USD)", "Valor usado (USD)"))
+          : parseNumFlex(pickCol(r, "Valor usado (MXN)", "Valor gasto (MXN)"));
+        const spendUSD = isUSD ? spendRaw : spendRaw/MXN_USD_RATE_SEG_NOVA;
         const clicksV  =parseInt(r["Cliques no link"]||0)||0;
         const impressV =parseInt(r["Impressões"]||0)||0;
         const video3sV =parseInt(r["Reproduções do vídeo por no mínimo 3 segundos"]||0)||0;
@@ -1266,7 +1310,7 @@ async function loadData(force=false){
         d=parts.length===3?`${parts[2]}-${parts[1].padStart(2,"0")}-${parts[0].padStart(2,"0")}`:"";
       } else { d=dRaw; }
       if(!d)continue;
-      const spendV    =(parseFloat((r["Valor gasto (USD)"]||"0").replace(",","."))||0);
+      const spendV    =parseNumFlex(pickCol(r, "Valor gasto (USD)", "Valor usado (USD)"));
       const clicksV   =parseInt(r["Cliques no link"]||0)||0;
       const impressV  =parseInt(r["Impressões"]||0)||0;
       const video3sV  =parseInt(r["Reproduções do vídeo por no mínimo 3 segundos"]||0)||0;
@@ -1331,7 +1375,7 @@ async function loadData(force=false){
         const d=toISO(r["Date"]);if(!d)continue;
         const _acc=(r["Account Name"]||r["Account name"]||"").trim();
         const _raw=parseBRL(r["Spend (Cost, Amount Spent)"]);
-        const spendV=_acc==="Conta 2 cartão"?_raw/18:_raw;
+        const spendV=accountSpendToUSD(_acc,_raw);
         const clicksV   =parseInt(r["Action Link Clicks"]||0)||0;
         const icV       =parseInt(r["Action Omni Initiated Checkout"]||r["Action FB Pixel Initiate Checkout (Offsite Conversion)"]||0)||0;
         const impressV  =parseInt(r["Impressions"]||0)||0;
