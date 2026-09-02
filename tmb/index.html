@@ -198,7 +198,8 @@ input[type=date]::-webkit-calendar-picker-indicator:hover{opacity:1}
   /* ── Inline repeat grids (render functions) ── */
   [style*="repeat(3,1fr)"],[style*="repeat(4,1fr)"],
   [style*="repeat(5,1fr)"],[style*="repeat(6,1fr)"],
-  [style*="repeat(7,1fr)"],[style*="repeat(8,1fr)"]{
+  [style*="repeat(7,1fr)"],[style*="repeat(8,1fr)"],
+  [style*="repeat(9,1fr)"]{
     grid-template-columns:repeat(2,1fr)!important;
     gap:8px!important;
   }
@@ -1284,11 +1285,13 @@ function getDailyT(start,end){
     const connect   = mClk>0  ? (m.landingViews/mClk)*100 : 0;
     const txConvPg  = m.landingViews>0 ? (mTrf/m.landingViews)*100 : 0;
     const cpl   = l.traffic>0     ? m.spend/l.traffic           : 0;
+    const infoprodutor=(S.infoD&&S.infoD[date])||0;
     return{date,label:fDate(date),spend:m.spend,
       cpc,ctr,cpm,connect,txConvPg,cpl,
       clicks:m.clicks,impressions:m.impressions,mClicks:mClk,mTraf:mTrf,
       landingViews:m.landingViews,metaLeads:m.metaLeads,
-      infoprodutor:(S.infoD&&S.infoD[date])||0,
+      infoprodutor,
+      custoInfo: infoprodutor>0 ? m.spend/infoprodutor : 0,
       infoReal:(S.infoRealD&&S.infoRealD[date])||0,
       ganho:(S.ganhoD&&S.ganhoD[date])||0,
       trafficLeads:l.traffic};
@@ -1334,6 +1337,7 @@ function getDayMetrics(iso){
   const l=S.leadsD[iso]||{traffic:0,organic:0};
   const mClk=metaClicksOn(iso);
   const mTrf=metaTrafOn(iso);
+  const infoprodutor=(S.infoD&&S.infoD[iso])||0;
   return{
     spend:m.spend,
     cpc:   m.clicks>0      ? m.spend/m.clicks              : 0,
@@ -1343,6 +1347,8 @@ function getDayMetrics(iso){
     txConvPg: m.landingViews>0 ? (mTrf/m.landingViews)*100 : 0,
     cpl:   l.traffic>0     ? m.spend/l.traffic             : 0,
     trafficLeads:l.traffic,
+    infoprodutor,
+    custoInfo: infoprodutor>0 ? m.spend/infoprodutor : 0,
   };
 }
 
@@ -1402,12 +1408,15 @@ function getDayMetricsDist(iso){
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────
-function navTo(page){
-  S.currentPage=page;
-  window.scrollTo(0,0);
+function showPage(page){
   document.querySelectorAll(".page").forEach(el=>{
     el.classList.toggle("active",el.id==="page-"+page);
   });
+}
+function navTo(page){
+  S.currentPage=page;
+  window.scrollTo(0,0);
+  showPage(page);
   render();
 }
 function applyQuickCurrent(k){
@@ -1479,6 +1488,8 @@ function setFunil(funil){
   else if(funil==="aniversario"){ S.channel="meta"; applyAniv(); }
   const m=document.getElementById("funil-menu");
   if(m)m.style.display="none";
+  window.scrollTo(0,0);
+  showPage("principal");   // fix: sem isso a tela travava na aba antiga (a div "active" no DOM não acompanhava currentPage)
   render();
 }
 document.addEventListener("click",()=>{
@@ -1514,14 +1525,16 @@ function renderHeader(){
     {id:"trafego",label:"⟳ Métricas tráfego"},
     {id:"anuncios",label:"◈ Campanhas / Anúncios"},
     {id:"resumo",label:"📋 Resumo diário"},
+    {id:"planejamento",label:"🗓 Planejamento"},
   ];
-  // Aniversário: mesmas abas do Sprint (sem Planejamento/Páginas).
+  // Aniversário: mesmas abas do Sprint (cada um com seu próprio Planejamento; sem Páginas).
   const TABS_ANIV=TABS_SPRINT;
   const TABS_SEG=[
     {id:"principal",label:"⊞ Principal"},
     {id:"trafego",label:"⟳ Métricas tráfego"},
     {id:"anuncios",label:"◈ Campanhas / Anúncios"},
     {id:"resumo",label:"📋 Resumo diário"},
+    {id:"planejamento",label:"🗓 Planejamento"},
   ];
   const TABS=isSeg?TABS_SEG:(isSprint?TABS_SPRINT:(isAniv?TABS_ANIV:TABS_PERP));
   tabsEl.innerHTML=TABS.map(t=>`<button class="htab${p===t.id?" htab-active":""}" onclick="navTo('${t.id}')">${t.label}</button>`).join("");
@@ -1598,6 +1611,40 @@ function drawDualTMB(id,data,cssW,cssH){
   ctx.setLineDash([]);
   ctx.fillStyle=CHART_CPL;ctx.font="9px 'Inter',sans-serif";ctx.textAlign="left";
   ctx.fillText("Meta R$"+META_CPL,P.l+cW+4,mY-3);
+  drawLineArea(ctx,xP,yPL,lVals,CHART_INV,true);
+  drawLineArea(ctx,xP,yPR,rVals,CHART_CPL,false);
+  const step=data.length>60?7:data.length>30?3:data.length>14?2:1;
+  ctx.fillStyle=TICK_C;ctx.font="10px 'DM Mono',monospace";ctx.textAlign="center";ctx.setLineDash([]);
+  data.forEach((d,i)=>{if(i%step===0)ctx.fillText(d.label,xP(i),P.t+cH+18);});
+}
+
+function drawDualCustoInfo(id,data,cssW,cssH){
+  const ctx=initCanvas(id,cssW,cssH);if(!ctx)return;
+  const P={t:14,r:58,b:28,l:64};
+  const cW=cssW-P.l-P.r,cH=cssH-P.t-P.b;
+  const metaVal=METAS_T.custoInfo.val;
+  const lVals=data.map(d=>d.spend||0);
+  const rVals=data.map(d=>d.custoInfo||0);
+  const lMax=Math.max(...lVals,0.01)*1.15;
+  const rMax=Math.max(...rVals,metaVal,0.01)*1.4;
+  const xP=i=>P.l+(data.length>1?i/(data.length-1):0.5)*cW;
+  const yPL=v=>P.t+cH-((v)/(lMax))*cH;
+  const yPR=v=>P.t+cH-((v)/(rMax))*cH;
+  ctx.setLineDash([]);
+  for(let i=0;i<=4;i++){
+    const y=P.t+(i/4)*cH;
+    ctx.strokeStyle=GRID_C;ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(P.l,y);ctx.lineTo(P.l+cW,y);ctx.stroke();
+    ctx.fillStyle=TICK_C;ctx.font="10px 'DM Mono',monospace";
+    ctx.textAlign="right";ctx.fillText(fBRLShort(lMax-(i/4)*lMax),P.l-5,y+3.5);
+    ctx.textAlign="left";ctx.fillText("R$"+(rMax-(i/4)*rMax).toFixed(0),P.l+cW+5,y+3.5);
+  }
+  const mY=yPR(metaVal);
+  ctx.strokeStyle=CHART_CPL+"55";ctx.lineWidth=1;ctx.setLineDash([4,3]);
+  ctx.beginPath();ctx.moveTo(P.l,mY);ctx.lineTo(P.l+cW,mY);ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle=CHART_CPL;ctx.font="9px 'Inter',sans-serif";ctx.textAlign="left";
+  ctx.fillText("Meta R$"+metaVal,P.l+cW+4,mY-3);
   drawLineArea(ctx,xP,yPL,lVals,CHART_INV,true);
   drawLineArea(ctx,xP,yPR,rVals,CHART_CPL,false);
   const step=data.length>60?7:data.length>30?3:data.length>14?2:1;
@@ -1949,6 +1996,18 @@ function renderPrincipal(){
       </div>
       <div style="position:relative"><canvas id="c-dual"></canvas><div class="tip" id="t-dual"></div></div>
     </div>
+    ${(!isAniv&&!isSprint)?`
+    <div class="cc" style="margin-bottom:12px;position:relative">
+      <div class="ch">
+        <span class="ct">Investimento × Custo por Infoprodutor</span>
+        <div class="lg">
+          <span class="li"><span class="ll" style="background:${CHART_INV}"></span>Invest. (esq.)</span>
+          <span class="li"><span class="ll" style="background:${CHART_CPL}"></span>Infoprodutor (dir.)</span>
+          <span class="li"><span class="ll" style="background:${CHART_CPL};opacity:.4;border-top:1px dashed ${CHART_CPL}"></span>Meta R$${METAS_T.custoInfo.val}</span>
+        </div>
+      </div>
+      <div style="position:relative"><canvas id="c-dual-info"></canvas><div class="tip" id="t-dual-info"></div></div>
+    </div>`:""}
     <div class="cc" style="position:relative">
       <div class="ch">
         <span class="ct">Volume de Leads (tráfego)</span>
@@ -1990,6 +2049,13 @@ function renderPrincipal(){
     setupTip("c-leads","t-leads",daily,[
       {key:"trafficLeads",color:CHART_LEADS,name:"Leads",fmt:v=>Math.round(v).toString()},
     ],40,12);
+    if(!isAniv&&!isSprint){
+      drawDualCustoInfo("c-dual-info",dailyT,mW,230);
+      setupTip("c-dual-info","t-dual-info",dailyT,[
+        {key:"spend",color:CHART_INV,name:"Investimento"},
+        {key:"custoInfo",color:CHART_CPL,name:"Custo/Infoprodutor"},
+      ]);
+    }
     if(isAniv){
       drawCountBar("c-info",dailyT,"infoprodutor",CHART_CPL,mW,180);
       setupTip("c-info","t-info",dailyT,[
@@ -2078,6 +2144,7 @@ function renderFunil(){
 // ── Render Tráfego ────────────────────────────────────────────────────────
 function renderTrafego(){
   const el=document.getElementById("page-trafego");if(!el)return;
+  const isSprint=S.currentFunil==="sprint";   // Sprint não tem Infoprodutor
   const today=todayISO();
   const todayM=getDayMetrics(today);
   const p3Start=subDays(today,3);
@@ -2089,6 +2156,7 @@ function renderTrafego(){
   const p7Tot=getTotalsT(getDailyT(p7Start,p7End));
   const daily=getDailyT(S.startDate,S.endDate);
 
+  const fCount=n=>(n||0).toLocaleString("pt-BR");
   const METRICS=[
     {key:"spend",    lbl:"Investimento",       fmt:fBRL,  meta:null,              higher:null},
     {key:"cpl",      lbl:"Custo por Lead",      fmt:fBRL,  meta:METAS_T.cpl.val,  higher:false},
@@ -2097,6 +2165,10 @@ function renderTrafego(){
     {key:"cpm",      lbl:"CPM",                 fmt:fBRL,  meta:METAS_T.cpm.val,  higher:false},
     {key:"connect",  lbl:"Connect Rate",        fmt:fPct,  meta:METAS_T.connect.val,  higher:true},
     {key:"txConvPg", lbl:"Conv. Pg. Cadastro",  fmt:fPct,  meta:METAS_T.txConvPg.val, higher:true},
+    ...(isSprint?[]:[
+      {key:"infoprodutor", lbl:"Volume Infoprodutor",    fmt:fCount, meta:null,                  higher:null},
+      {key:"custoInfo",    lbl:"Custo por Infoprodutor", fmt:fBRL,   meta:METAS_T.custoInfo.val, higher:false},
+    ]),
   ];
 
   function metricsRow(dataObj){
@@ -2153,15 +2225,15 @@ function renderTrafego(){
     </div>
     ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
     <div class="section-lbl">Hoje — ${fDateBR(today)}</div>
-    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:16px">
+    <div style="display:grid;grid-template-columns:repeat(${METRICS.length},1fr);gap:10px;margin-bottom:16px">
       ${metricsRow(todayM)}
     </div>
     <div class="section-lbl">Últimos 3 dias — ${fDateBR(p3Start)} a ${fDateBR(p3End)}</div>
-    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:16px">
+    <div style="display:grid;grid-template-columns:repeat(${METRICS.length},1fr);gap:10px;margin-bottom:16px">
       ${metricsRow(p3Tot)}
     </div>
     <div class="section-lbl">Últimos 7 dias — ${fDateBR(p7Start)} a ${fDateBR(p7End)}</div>
-    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:20px">
+    <div style="display:grid;grid-template-columns:repeat(${METRICS.length},1fr);gap:10px;margin-bottom:20px">
       ${metricsRow(p7Tot)}
     </div>
     <div class="charts-2x3">
@@ -3283,34 +3355,43 @@ function clearManualPlanDist(){S.manualPlanDist=null;renderResumoSeg();}
 
 // ── Planejamento (Perpétuo) — modelo ADAPTATIVO ───────────────────────────
 const PLAN_CPL   = 35;
-const PLAN_MONTH = "2026-08";
-const PLAN_TOTAL_DEFAULT = 95000;
-const PLAN_W_DEFAULT = {s1:1.25, s2:1.25, s3:0.65, s4:1.00};
-const PLAN_LS_KEY = "tmb_plan_cfg_v1";
+const PLAN_TOTAL_DEFAULT = 100000;
+// Pesos em % do total do mês por semana.
+const PLAN_W_DEFAULT = {s1:30, s2:30, s3:20, s4:20};
+// Mês do plano = sempre o mês corrente (recalculado a cada chamada, nunca fixo).
+// Isso garante que na virada do mês (dia 1º) a tabela de Planejamento — em todos os
+// funis — reseta sozinha para o novo mês, sem precisar editar nada no código.
+function planCurrentMonth(){ const d=nowBR(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
 
-function loadPlanCfg(){
-  const def={total:PLAN_TOTAL_DEFAULT, weights:{...PLAN_W_DEFAULT}};
-  try{
-    const raw=localStorage.getItem(PLAN_LS_KEY);
-    if(!raw)return def;
-    const o=JSON.parse(raw)||{}; const w=o.weights||{};
-    const pos=(v,d)=>{const n=parseFloat(v);return(isFinite(n)&&n>0)?n:d;};
-    return {total:(isFinite(o.total)&&o.total>0)?o.total:def.total,
-      weights:{s1:pos(w.s1,def.weights.s1),s2:pos(w.s2,def.weights.s2),s3:pos(w.s3,def.weights.s3),s4:pos(w.s4,def.weights.s4)}};
-  }catch(e){ return def; }
-}
-function savePlanCfg(cfg){ try{ localStorage.setItem(PLAN_LS_KEY, JSON.stringify(cfg)); }catch(e){} }
-function planCfg(){ if(!S.planCfg)S.planCfg=loadPlanCfg(); return S.planCfg; }
 function planWeekKey(day){ return day<=7?"s1":(day<=14?"s2":(day<=21?"s3":"s4")); }
-function planDaysInMonth(){ const [y,m]=PLAN_MONTH.split("-").map(Number); return new Date(y,m,0).getDate(); }
+function planDaysInMonth(){ const [y,m]=planCurrentMonth().split("-").map(Number); return new Date(y,m,0).getDate(); }
+function planWeekDayCounts(){
+  const days=planDaysInMonth();
+  const c={s1:0,s2:0,s3:0,s4:0};
+  for(let d=1;d<=days;d++) c[planWeekKey(d)]++;
+  return c;
+}
+// Peso efetivo por-dia = (% da semana) ÷ (nº de dias da semana). É o que entra na curva/normalização.
+function planPerDayWeight(weights,counts,wk){
+  return counts[wk]>0 ? (weights[wk]||0)/counts[wk] : 0;
+}
+// Planejamento do Perpétuo NÃO é salvo no navegador (por pedido do cliente): toda edição
+// de total/pesos vale só para a sessão atual (em memória); ao atualizar a página, volta
+// sempre para o padrão acima. Nada é lido nem gravado em localStorage aqui.
+function loadPlanCfg(){
+  return {total:PLAN_TOTAL_DEFAULT, weights:{...PLAN_W_DEFAULT}};
+}
+function savePlanCfg(cfg){ /* intencionalmente não persiste — ver comentário acima */ }
+function planCfg(){ if(!S.planCfg)S.planCfg=loadPlanCfg(); return S.planCfg; }
 function planBaseCurve(total,weights){
   const days=planDaysInMonth();
-  let sumW=0; for(let d=1;d<=days;d++) sumW+=weights[planWeekKey(d)];
+  const counts=planWeekDayCounts();
+  let sumW=0; for(let d=1;d<=days;d++) sumW+=planPerDayWeight(weights,counts,planWeekKey(d));
   const unit=sumW>0?total/sumW:0;
   const map={}; let acc=0;
   for(let d=1;d<=days;d++){
-    const iso=`${PLAN_MONTH}-${String(d).padStart(2,"0")}`;
-    const v=(d===days)?(total-acc):Math.round(unit*weights[planWeekKey(d)]);
+    const iso=`${planCurrentMonth()}-${String(d).padStart(2,"0")}`;
+    const v=(d===days)?(total-acc):Math.round(unit*planPerDayWeight(weights,counts,planWeekKey(d)));
     acc+=v; map[iso]=v;
   }
   return map;
@@ -3319,23 +3400,23 @@ function planVendasDia(invest){ return Math.round(invest/PLAN_CPL); }
 
 function getPlanDaily(){
   const cfg=planCfg(); const total=cfg.total, weights=cfg.weights;
+  const counts=planWeekDayCounts();
   const base=planBaseCurve(total,weights);
   const today=todayISO(), yest=yesterdayISO();
   const days=Object.keys(base).sort();
   const consBD=(S._chan&&S._chan.consolidado&&S._chan.consolidado.byDate)||{};
   const consLD=(S._chan&&S._chan.consolidado&&S._chan.consolidado.leadsD)||{};
-  const sprBD =(S._sprintChan&&S._sprintChan.meta&&S._sprintChan.meta.byDate)||{};
-  const sprLD =(S._sprintChan&&S._sprintChan.meta&&S._sprintChan.meta.leadsD)||{};
-  const realInvOn=d=>(((consBD[d]&&consBD[d].spend)||0)+((sprBD[d]&&sprBD[d].spend)||0));
-  const realVenOn=d=>(((consLD[d]&&consLD[d].traffic)||0)+((sprLD[d]&&sprLD[d].traffic)||0));
-  const hasRealOn=d=> d<=today && (!!consBD[d] || !!sprBD[d]);
+  // Investido do Planejado conta somente o gasto do Perpétuo (consolidado) — Sprint tem seu próprio planejamento.
+  const realInvOn=d=>((consBD[d]&&consBD[d].spend)||0);
+  const realVenOn=d=>((consLD[d]&&consLD[d].traffic)||0);
+  const hasRealOn=d=> d<=today && !!consBD[d];
   let spentAteOntem=0; for(const d of days){ if(d<=yest) spentAteOntem+=realInvOn(d); }
   const remain=days.filter(d=>d>=today);
-  let remainW=0; for(const d of remain){ remainW+=weights[planWeekKey(+d.slice(-2))]; }
+  let remainW=0; for(const d of remain){ remainW+=planPerDayWeight(weights,counts,planWeekKey(+d.slice(-2))); }
   const saldo=total-spentAteOntem;
   const unitAdj=remainW>0?saldo/remainW:0;
   return days.map(date=>{
-    const day=+date.slice(-2), w=weights[planWeekKey(day)];
+    const day=+date.slice(-2), w=planPerDayWeight(weights,counts,planWeekKey(day));
     const isPast=date<today, isToday=date===today, isFuture=date>today;
     const planInv=isPast?base[date]:(unitAdj*w);
     const planVen=planVendasDia(planInv);
@@ -3356,7 +3437,7 @@ function getPlanTotals(daily){
     if(d.isToday){ t.sugeridoHoje=d.planInv; t.sugeridoHojeVen=d.planVen; t.temHoje=true; }
     if(d.date<today){ t.baseAteOntem+=d.basePlanInv; if(d.realInv!=null) t.realAteOntem+=d.realInv; }
   });
-  t.spentAteOntem=t.realAteOntem; t.saldo=cfg.total - t.spentAteOntem;
+  t.spentAteOntem=t.realAteOntem; t.saldo=cfg.total - t.realInvTot;
   return t;
 }
 
@@ -3366,7 +3447,7 @@ function setPlanTotal(v){
   savePlanCfg(cfg); renderPlanejamento();
 }
 function setPlanWeight(key,v){
-  const n=parseFloat(String(v).replace(",","."));
+  const n=parseFloat(String(v).replace("%","").trim().replace(",","."));
   const cfg=planCfg(); if(isFinite(n)&&n>0)cfg.weights[key]=n;
   savePlanCfg(cfg); renderPlanejamento();
 }
@@ -3375,7 +3456,154 @@ function resetPlanCfg(){
   savePlanCfg(S.planCfg); renderPlanejamento();
 }
 
+// ── Planejamento por funil (Seguidores / Sprint / Aniversário) ────────────
+// Cada funil tem seu próprio valor de investimento (R$), editável, sem curva/ajuste
+// percentual de semanas (isso é exclusivo do Planejamento do Perpétuo).
+const PLAN_SIMPLE_DEFAULT = {seguidores:10000, sprint:5000, aniversario:10000};
+const PLAN_SIMPLE_LS_KEY  = "tmb_plan_simple_v1";
+const PLAN_SIMPLE_LBL     = {seguidores:"Seguidores", sprint:"Sprint", aniversario:"Aniversário"};
+
+function loadPlanSimpleCfg(){
+  const def={...PLAN_SIMPLE_DEFAULT};
+  try{
+    const raw=localStorage.getItem(PLAN_SIMPLE_LS_KEY);
+    if(!raw)return def;
+    const o=JSON.parse(raw)||{};
+    const pos=(v,d)=>{const n=parseFloat(v);return(isFinite(n)&&n>0)?n:d;};
+    return {seguidores:pos(o.seguidores,def.seguidores), sprint:pos(o.sprint,def.sprint), aniversario:pos(o.aniversario,def.aniversario)};
+  }catch(e){ return def; }
+}
+function savePlanSimpleCfg(cfg){
+  try{
+    localStorage.setItem(PLAN_SIMPLE_LS_KEY, JSON.stringify(cfg));
+    const check=localStorage.getItem(PLAN_SIMPLE_LS_KEY);
+    S.planSimpleSaveError = !check;
+  }catch(e){ S.planSimpleSaveError = true; }
+}
+function planSimpleCfg(){ if(!S.planSimpleCfg)S.planSimpleCfg=loadPlanSimpleCfg(); return S.planSimpleCfg; }
+
+function planSimpleByDateFor(funil){
+  if(funil==="sprint")      return (S._sprintChan&&S._sprintChan.meta&&S._sprintChan.meta.byDate)||{};
+  if(funil==="aniversario") return (S._anivChan&&S._anivChan.meta&&S._anivChan.meta.byDate)||{};
+  if(funil==="seguidores")  return S.distMeta||{};
+  return {};
+}
+// Distribuição diária SIMPLES (flat, sem curva/pesos por semana) — o valor do mês é
+// dividido igualmente pelos dias já passados; o saldo restante é redistribuído em
+// partes iguais pelos dias que faltam (mesma mecânica adaptativa do Perpétuo, só
+// que sem pesos de semana).
+function getPlanSimpleDaily(funil){
+  const cfg=planSimpleCfg(); const total=cfg[funil]||0;
+  const nDias=planDaysInMonth();
+  const today=todayISO(), yest=yesterdayISO();
+  const byDate=planSimpleByDateFor(funil);
+  const dates=[]; for(let d=1;d<=nDias;d++) dates.push(`${planCurrentMonth()}-${String(d).padStart(2,"0")}`);
+  const base=nDias>0?total/nDias:0;
+  const realOn=d=>((byDate[d]&&byDate[d].spend)||0);
+  const hasRealOn=d=> d<=today && !!byDate[d];
+  let spentAteOntem=0; for(const d of dates){ if(d<=yest) spentAteOntem+=realOn(d); }
+  const remain=dates.filter(d=>d>=today);
+  const saldoAgora=total-spentAteOntem;
+  const unitAdj=remain.length>0?saldoAgora/remain.length:0;
+  return dates.map(date=>{
+    const isPast=date<today, isToday=date===today, isFuture=date>today;
+    const planInv=isPast?base:unitAdj;
+    const hasReal=hasRealOn(date);
+    return {date,label:fDate(date),planInv,basePlanInv:base,
+      realInv:hasReal?realOn(date):null,isPast,isToday,isFuture,hasReal};
+  });
+}
+function getPlanSimpleTotals(funil,daily){
+  const today=todayISO(); const cfg=planSimpleCfg(); const total=cfg[funil]||0;
+  const t={planTotalMes:total,realInvTot:0,baseAteOntem:0,realAteOntem:0,
+    sugeridoHoje:0,saldo:0,spentAteOntem:0,temHoje:false};
+  daily.forEach(d=>{
+    if(d.realInv!=null) t.realInvTot+=d.realInv;
+    if(d.isToday){ t.sugeridoHoje=d.planInv; t.temHoje=true; }
+    if(d.date<today){ t.baseAteOntem+=d.basePlanInv; if(d.realInv!=null) t.realAteOntem+=d.realInv; }
+  });
+  t.spentAteOntem=t.realAteOntem; t.saldo=total-t.realInvTot;
+  return t;
+}
+function setPlanSimpleTotal(funil,v){
+  const n=parseFloat(String(v).replace(/[R$\s.]/g,"").replace(",","."));
+  const cfg=planSimpleCfg(); if(isFinite(n)&&n>0)cfg[funil]=n;
+  savePlanSimpleCfg(cfg); renderPlanejamento();
+}
+
+function renderPlanejamentoSimples(funil){
+  const el=document.getElementById("page-planejamento");if(!el)return;
+  const cfg=planSimpleCfg();
+  const rows=getPlanSimpleDaily(funil);
+  const tot=getPlanSimpleTotals(funil,rows);
+  const nDias=rows.length;
+  const fW=n=>(n||0).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
+  function realColor(real,plan){ if(real==null||plan<=0)return "var(--muted)"; return statusColor(real,plan,true); }
+
+  const bodyRows=rows.map(d=>{
+    const dInv=fBRL(d.planInv);
+    const rInv=d.realInv==null?"—":fBRL(d.realInv);
+    const cInv=realColor(d.realInv,d.planInv);
+    const hl=d.isToday?"background:rgba(59,130,246,.10)":"";
+    const tag=d.isToday?`<span style="color:#60a5fa;font-weight:700"> 👈 hoje</span>`
+              :(d.isFuture?`<span style="color:var(--hint);font-size:9px"> · ajustado</span>`
+              :`<span style="color:var(--hint);font-size:9px"> · realizado</span>`);
+    return `<tr style="${hl}">
+      <td style="${PLTDL}">${d.label}${tag}</td>
+      <td style="${PLTD}">${dInv}</td>
+      <td style="${PLTD};color:${cInv};font-weight:600">${rInv}</td>
+    </tr>`;
+  }).join("");
+
+  el.innerHTML=`
+    <div class="hdr" style="margin-bottom:6px">
+      <div>
+        <div class="hdr-title">Planejamento — ${PLAN_SIMPLE_LBL[funil]}</div>
+        <div class="hdr-sub">${nDias} dias · investimento mensal fixo · sem curva por semana · ajuste diário adaptativo · atualizado em: ${S.updated||"—"}</div>
+      </div>
+      <div>${statusLegend()}</div>
+    </div>
+    ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
+
+    <div class="cc" style="padding:16px 18px;margin-bottom:16px">
+      <div style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:18px">
+        <div style="display:flex;flex-direction:column;gap:3px">
+          <label style="font-size:9px;color:var(--hint);text-transform:uppercase;letter-spacing:.06em">Investimento do mês (R$)</label>
+          <input value="${fW(cfg[funil])}" onchange="setPlanSimpleTotal('${funil}',this.value)" onkeydown="if(event.key==='Enter')this.blur()"
+            style="width:150px;font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--text-strong);background:var(--surf);border:1px solid var(--border);border-radius:7px;padding:6px 9px;outline:none"/>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--hint);margin-top:10px;line-height:1.6">
+        Valor único para o mês, dividido em partes iguais pelos dias (sem curva por semana — esse ajuste é exclusivo do Perpétuo). O investimento sugerido do dia se ajusta pelo saldo restante conforme o realizado. Edições ficam salvas <b>neste navegador</b> (localStorage) — não sincronizam entre dispositivos.
+      </div>
+      ${S.planSimpleSaveError?`<div style="font-size:11px;color:#f87171;margin-top:8px;font-weight:600">⚠️ Não consegui salvar essa edição neste navegador (localStorage bloqueado/indisponível) — ao recarregar a página, o valor pode voltar ao padrão.</div>`:""}
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:13px;margin-bottom:13px">
+      ${kpiCard("Investimento Planejado (mês)",fBRL(tot.planTotalMes),"total travado","var(--text-strong)")}
+      ${kpiCard("Investimento Realizado (mês)",fBRL(tot.realInvTot),`vs curva até hoje ${fBRL(tot.baseAteOntem)}`,realColor(tot.realAteOntem,tot.baseAteOntem))}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:13px;margin-bottom:16px">
+      ${kpiCard("🎯 Investimento sugerido hoje",tot.temHoje?fBRL(tot.sugeridoHoje):"—",tot.temHoje?"ajustado pelo realizado":"fora do mês do plano","#60a5fa")}
+      ${kpiCard("Saldo restante do mês",fBRL(tot.saldo),"Total - investido até hoje","var(--text-strong)")}
+      ${kpiCard("Investido até ontem",fBRL(tot.spentAteOntem),"dia fechado","var(--text-strong)")}
+    </div>
+    <div class="cc" style="padding:0;overflow:hidden">
+      <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr>
+          <th style="${PLTHL}">DATA</th>
+          <th style="${PLTHR}">INVESTIMENTO PLANEJADO</th>
+          <th style="${PLTHR}">INVESTIMENTO REALIZADO</th>
+        </tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table>
+      </div>
+    </div>`;
+}
+
 function renderPlanejamento(){
+  if(S.currentFunil!=="perpetuo"){ renderPlanejamentoSimples(S.currentFunil); return; }
   const el=document.getElementById("page-planejamento");if(!el)return;
   const cfg=planCfg();
   const rows=getPlanDaily();
@@ -3383,9 +3611,10 @@ function renderPlanejamento(){
   const nDias=rows.length;
   const fInt=n=>Math.round(n||0).toLocaleString("pt-BR");
   const fW=n=>(n||0).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
+  const fWPct=n=>(n||0).toLocaleString("pt-BR",{minimumFractionDigits:1,maximumFractionDigits:1});
   function realColor(real,plan){ if(real==null||plan<=0)return "var(--muted)"; return statusColor(real,plan,true); }
   const today=todayISO();
-  const wkNow = today.slice(0,7)===PLAN_MONTH ? planWeekKey(+today.slice(-2)) : null;
+  const wkNow = today.slice(0,7)===planCurrentMonth() ? planWeekKey(+today.slice(-2)) : null;
   const wkLbl={s1:"Semana 1 (dias 1–7)",s2:"Semana 2 (8–14)",s3:"Semana 3 (15–21)",s4:"Semana 4 (22–fim)"};
 
   const bodyRows=rows.map(d=>{
@@ -3409,8 +3638,8 @@ function renderPlanejamento(){
 
   const wInp=(key,lbl)=>`<div style="display:flex;flex-direction:column;gap:3px">
     <label style="font-size:9px;color:var(--hint);text-transform:uppercase;letter-spacing:.06em">${lbl}</label>
-    <input value="${fW(cfg.weights[key])}" onchange="setPlanWeight('${key}',this.value)" onkeydown="if(event.key==='Enter')this.blur()"
-      style="width:66px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-strong);background:var(--surf);border:1px solid var(--border);border-radius:7px;padding:5px 7px;outline:none"/>
+    <input value="${fWPct(cfg.weights[key])}%" onchange="setPlanWeight('${key}',this.value)" onkeydown="if(event.key==='Enter')this.blur()"
+      style="width:66px;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-strong);background:var(--surf);border:1px solid var(--border);border-radius:7px;padding:5px 7px;outline:none"/>
   </div>`;
 
   el.innerHTML=`
@@ -3430,23 +3659,23 @@ function renderPlanejamento(){
           <input value="${fW(cfg.total)}" onchange="setPlanTotal(this.value)" onkeydown="if(event.key==='Enter')this.blur()"
             style="width:150px;font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--text-strong);background:var(--surf);border:1px solid var(--border);border-radius:7px;padding:6px 9px;outline:none"/>
         </div>
-        <div style="display:flex;gap:10px">${wInp("s1","Peso S1")}${wInp("s2","Peso S2")}${wInp("s3","Peso S3")}${wInp("s4","Peso S4")}</div>
+        <div style="display:flex;gap:10px">${wInp("s1","Peso S1 (%)")}${wInp("s2","Peso S2 (%)")}${wInp("s3","Peso S3 (%)")}${wInp("s4","Peso S4 (%)")}</div>
         <button onclick="resetPlanCfg()" style="padding:7px 14px;background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.35);color:#fbbf24;border-radius:8px;cursor:pointer;font-size:11px;font-weight:600;font-family:'DM Sans',sans-serif">↩ Restaurar padrão</button>
       </div>
       <div style="font-size:10px;color:var(--hint);margin-top:10px;line-height:1.6">
-        Semanas em blocos de 7 dias a partir do dia 1º. Pesos são normalizados pra fechar o Total. Edições ficam salvas <b>neste navegador</b> (localStorage) — não sincronizam entre dispositivos.${wkNow?` · Hoje: <b style="color:var(--text)">${wkLbl[wkNow]}</b> (peso ${fW(cfg.weights[wkNow])})`:""}
+        Semanas em blocos de 7 dias a partir do dia 1º. Pesos em % do total do mês por semana — normalizados pra fechar o Total. <b>Edições valem só para esta sessão</b> — ao atualizar a página, os valores voltam para o padrão (não fica salvo no navegador).${wkNow?` · Hoje: <b style="color:var(--text)">${wkLbl[wkNow]}</b> (peso ${fWPct(cfg.weights[wkNow])}%)`:""}
       </div>
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:13px;margin-bottom:13px">
       ${kpiCard("Investimento Planejado (mês)",fBRL(tot.planTotalMes),"total travado","var(--text-strong)")}
-      ${kpiCard("Investimento Realizado (mês)",fBRL(tot.realInvTot),`vs curva até ontem ${fBRL(tot.baseAteOntem)}`,realColor(tot.realAteOntem,tot.baseAteOntem))}
+      ${kpiCard("Investimento Realizado (mês)",fBRL(tot.realInvTot),`vs curva até hoje ${fBRL(tot.baseAteOntem)}`,realColor(tot.realAteOntem,tot.baseAteOntem))}
       ${kpiCard("Leads Planejados (mês)",fInt(tot.planVenMes),`meta CPL ${fBRL(PLAN_CPL)}`,"var(--text-strong)")}
       ${kpiCard("Leads Realizados (mês)",fInt(tot.realVenTot),"","var(--text-strong)")}
     </div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:13px;margin-bottom:16px">
       ${kpiCard("🎯 Investimento sugerido hoje",tot.temHoje?fBRL(tot.sugeridoHoje):"—",tot.temHoje?`≈ ${fInt(tot.sugeridoHojeVen)} leads · ajustado pelo realizado`:"fora do mês do plano","#60a5fa")}
-      ${kpiCard("Saldo restante do mês",fBRL(tot.saldo),"Total − investido até ontem","var(--text-strong)")}
+      ${kpiCard("Saldo restante do mês",fBRL(tot.saldo),"Total - investido até hoje","var(--text-strong)")}
       ${kpiCard("Investido até ontem",fBRL(tot.spentAteOntem),"dia fechado","var(--text-strong)")}
     </div>
     <div class="cc" style="padding:0;overflow:hidden">
